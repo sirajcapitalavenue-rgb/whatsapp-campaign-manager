@@ -1,0 +1,417 @@
+// frontend/src/components/ContactViewModal.js
+
+import React, { useState, useContext } from "react";
+import { authFetch } from "../services/api";
+import { AuthContext } from "../context/AuthContext";
+import { FaEdit, FaTrash, FaSave, FaEye } from "react-icons/fa";
+import { MdCancel } from "react-icons/md";
+
+export default function ContactViewModal({
+  list,
+  contacts,
+  onClose,
+  onRefresh,
+}) {
+  const { user } = useContext(AuthContext);
+  const [editingContactId, setEditingContactId] = useState(null);
+  const [updatedData, setUpdatedData] = useState({});
+  const [filter, setFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all"); // New Status Filter
+  const [viewingStats, setViewingStats] = useState(null); // New Stats Viewing State
+  const [selectedContactIds, setSelectedContactIds] = useState(new Set()); // New Selection State
+
+  if (!list) return null; // The modal is controlled by the 'list' prop
+
+  const isAuthorizedToMutate = user?.role === "admin" || (list.createdBy && list.createdBy.toString() === user?._id?.toString());
+
+  const handleEditClick = (contact) => {
+    setEditingContactId(contact._id);
+    setUpdatedData({ name: contact.name, phoneNumber: contact.phoneNumber });
+  };
+
+  const handleCancelEdit = () => {
+    setEditingContactId(null);
+    setUpdatedData({});
+  };
+
+  const handleUpdateContact = async () => {
+    try {
+      await authFetch(`/contacts/contacts/${editingContactId}`, {
+        method: "PUT",
+        body: JSON.stringify(updatedData),
+      });
+      alert("Contact updated successfully.");
+      setEditingContactId(null);
+      onRefresh(); // Refresh the contact list in the parent
+    } catch (error) {
+      console.error("Error updating contact:", error);
+      alert("Failed to update contact.");
+    }
+  };
+
+  const handleDeleteContact = async (contactId) => {
+    try {
+      await authFetch(`/contacts/contacts/${contactId}`, { method: "DELETE" });
+      onRefresh(); // Refresh the contact list in the parent
+    } catch (error) {
+      console.error("Error deleting contact:", error);
+      alert("Failed to delete contact.");
+    }
+  };
+
+  // --- NEW HANDLER FOR STATS ---
+  const handleViewStats = async (contactId) => {
+    try {
+      const response = await authFetch(`/contacts/contacts/${contactId}/stats`);
+      if (response.success) {
+        setViewingStats(response.data);
+      } else {
+        alert("Failed to fetch contact stats.");
+      }
+    } catch (error) {
+      console.error("Error fetching stats:", error);
+      alert("Error fetching stats.");
+    }
+  };
+
+  // --- 3. FILTER THE CONTACTS ---
+  const filteredContacts = contacts.filter((contact) => {
+    const name = contact.name || "";
+    const phone = contact.phoneNumber || "";
+    const search = filter.toLowerCase();
+    const matchesSearch =
+      name.toLowerCase().includes(search) || phone.includes(search);
+
+    let matchesStatus = true;
+    if (statusFilter === "subscribed")
+      matchesStatus = contact.isSubscribed !== false;
+    if (statusFilter === "unsubscribed")
+      matchesStatus = contact.isSubscribed === false;
+
+    return matchesSearch && matchesStatus;
+  });
+
+  // --- BULK SELECTION HANDLERS ---
+  const toggleSelectAll = () => {
+    if (selectedContactIds.size === filteredContacts.length) {
+      setSelectedContactIds(new Set());
+    } else {
+      const allIds = new Set(filteredContacts.map((c) => c._id));
+      setSelectedContactIds(allIds);
+    }
+  };
+
+  const toggleSelectContact = (contactId) => {
+    const newSelected = new Set(selectedContactIds);
+    if (newSelected.has(contactId)) {
+      newSelected.delete(contactId);
+    } else {
+      newSelected.add(contactId);
+    }
+    setSelectedContactIds(newSelected);
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedContactIds.size === 0) return;
+    if (
+      !window.confirm(
+        `Are you sure you want to delete ${selectedContactIds.size} contacts?`,
+      )
+    )
+      return;
+
+    try {
+      const response = await authFetch(`/contacts/bulk-delete`, {
+        method: "POST",
+        body: JSON.stringify({ contactIds: Array.from(selectedContactIds) }),
+      });
+
+      if (response.success) {
+        alert("Contacts deleted successfully");
+        setSelectedContactIds(new Set());
+        onRefresh();
+      } else {
+        alert(response.error || "Failed to delete contacts");
+      }
+    } catch (error) {
+      console.error("Error deleting contacts:", error);
+      alert("Failed to delete contacts");
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-4xl max-h-[90vh] flex flex-col relative"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* --- STATS OVERLAY MODAL --- */}
+        {viewingStats && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-black bg-opacity-80 rounded-lg">
+            <div className="bg-white p-6 rounded-xl shadow-2xl w-full max-w-md border border-gray-200">
+              <div className="flex justify-between items-center mb-6">
+                <h3 className="text-xl font-bold text-gray-900">
+                  Contact Preview
+                </h3>
+                <button
+                  onClick={() => setViewingStats(null)}
+                  className="text-gray-500 hover:text-gray-900 font-bold text-xl"
+                >
+                  &times;
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <div className="flex justify-between border-b border-gray-100 pb-2">
+                  <span className="text-gray-500">Name</span>
+                  <span className="text-gray-900 font-medium">
+                    {viewingStats.contact.name || "-"}
+                  </span>
+                </div>
+                <div className="flex justify-between border-b border-gray-100 pb-2">
+                  <span className="text-gray-500">Phone</span>
+                  <span className="text-gray-900 font-medium">
+                    {viewingStats.contact.phoneNumber}
+                  </span>
+                </div>
+                <div className="flex justify-between border-b border-gray-100 pb-2">
+                  <span className="text-gray-500">Status</span>
+                  {viewingStats.contact.isSubscribed !== false ? (
+                    <span className="bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded text-xs">
+                      Subscribed
+                    </span>
+                  ) : (
+                    <span className="bg-red-100 text-red-700 px-2 py-0.5 rounded text-xs">
+                      Unsubscribed
+                    </span>
+                  )}
+                </div>
+                {viewingStats.contact.isSubscribed === false && (
+                  <div className="flex justify-between border-b border-gray-100 pb-2">
+                    <span className="text-gray-500">Unsubscribe Reason</span>
+                    <span className="text-red-600 italic text-right text-sm">
+                      {viewingStats.contact.unsubscribeReason ||
+                        "Not specified"}
+                    </span>
+                  </div>
+                )}
+
+                {/* Stats Grid */}
+                <div className="grid grid-cols-3 gap-2 mt-4">
+                  <div className="bg-gray-50 p-3 rounded-lg text-center border border-gray-200">
+                    <div className="text-xl font-bold text-emerald-600">
+                      {viewingStats.stats.campaignsSent}
+                    </div>
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider">
+                      Sent
+                    </div>
+                  </div>
+                  <div className="bg-gray-50 p-3 rounded-lg text-center border border-gray-200">
+                    <div className="text-xl font-bold text-sky-600">
+                      {viewingStats.stats.repliesCount}
+                    </div>
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider">
+                      Replied
+                    </div>
+                  </div>
+                  <div className="bg-gray-50 p-3 rounded-lg text-center border border-gray-200">
+                    <div className="text-xl font-bold text-red-600">
+                      {viewingStats.stats.campaignsFailed}
+                    </div>
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider">
+                      Failed
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="flex justify-between items-center p-4 border-b border-gray-200">
+          <div className="flex items-center gap-4">
+            <h2 className="text-xl font-bold text-gray-900">
+              Contacts in "{list.name}" ({contacts.length})
+            </h2>
+            {isAuthorizedToMutate && selectedContactIds.size > 0 && (
+              <button
+                onClick={handleBulkDelete}
+                className="bg-red-600 hover:bg-red-700 text-gray-900 px-3 py-1 rounded text-sm transition-colors"
+                title="Delete Selected"
+              >
+                Delete Selected ({selectedContactIds.size})
+              </button>
+            )}
+          </div>
+          <button
+            onClick={onClose}
+            className="text-gray-500 hover:text-gray-900 text-2xl"
+          >
+            &times;
+          </button>
+        </div>
+
+        {/* --- 4. ADD THE SEARCH BAR --- */}
+        <div className="p-4 border-b border-gray-200 flex gap-4">
+          <input
+            type="text"
+            placeholder="Search by name or phone number..."
+            className="bg-gray-50 border border-gray-200 text-gray-900 text-sm rounded-lg focus:ring-emerald-500 block w-full p-2.5"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          />
+          <select
+            className="bg-gray-50 border border-gray-200 text-gray-900 text-sm rounded-lg focus:ring-emerald-500 block p-2.5"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+          >
+            <option value="all">All</option>
+            <option value="subscribed">Subscribed</option>
+            <option value="unsubscribed">Unsubscribed</option>
+          </select>
+        </div>
+
+        <div className="p-6 overflow-y-auto">
+          <table className="min-w-full">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              <tr>
+                {isAuthorizedToMutate && (
+                  <th className="px-6 py-3 text-left">
+                    <input
+                      type="checkbox"
+                      className="rounded bg-white border-gray-300 text-emerald-500 focus:ring-emerald-500"
+                      checked={
+                        filteredContacts.length > 0 &&
+                        selectedContactIds.size === filteredContacts.length
+                      }
+                      onChange={toggleSelectAll}
+                    />
+                  </th>
+                )}
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-600 uppercase">
+                  Phone Number
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-600 uppercase">
+                  Name
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-600 uppercase">
+                  Actions
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {filteredContacts.map((contact) => (
+                <tr key={contact._id}>
+                  {editingContactId === contact._id ? (
+                    <>
+                      <td className="px-6 py-4"></td>
+                      <td className="px-6 py-4">
+                        <input
+                          type="text"
+                          value={updatedData.phoneNumber}
+                          onChange={(e) =>
+                            setUpdatedData({
+                              ...updatedData,
+                              phoneNumber: e.target.value,
+                            })
+                          }
+                          className="bg-[#2c3943] text-gray-900 text-sm rounded-md p-1 w-full"
+                        />
+                      </td>
+                      <td className="px-6 py-4">
+                        <input
+                          type="text"
+                          value={updatedData.name}
+                          onChange={(e) =>
+                            setUpdatedData({
+                              ...updatedData,
+                              name: e.target.value,
+                            })
+                          }
+                          className="bg-[#2c3943] text-gray-900 text-sm rounded-md p-1 w-full"
+                        />
+                      </td>
+                      <td className="px-6 py-4 flex gap-4">
+                        <button
+                          onClick={handleUpdateContact}
+                          className="text-green-500 hover:text-green-400"
+                        >
+                          <FaSave />
+                        </button>
+                        <button
+                          onClick={handleCancelEdit}
+                          className="text-gray-500 hover:text-gray-900"
+                        >
+                          <MdCancel />
+                        </button>
+                      </td>
+                    </>
+                  ) : (
+                    <>
+                      {isAuthorizedToMutate && (
+                        <td className="px-6 py-4">
+                          <input
+                            type="checkbox"
+                            className="rounded bg-white border-gray-300 text-emerald-500 focus:ring-emerald-500"
+                            checked={selectedContactIds.has(contact._id)}
+                            onChange={() => toggleSelectContact(contact._id)}
+                          />
+                        </td>
+                      )}
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                        {contact.phoneNumber}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                        {contact.name || "-"}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm flex gap-4">
+                        <button
+                          onClick={() => handleViewStats(contact._id)}
+                          className="text-sky-600 hover:text-sky-300"
+                          title="View Stats"
+                        >
+                          <FaEye />
+                        </button>
+                        {isAuthorizedToMutate && (
+                          <>
+                            <button
+                              onClick={() => handleEditClick(contact)}
+                              className="text-gray-500 hover:text-gray-600"
+                              title="Edit Contact"
+                            >
+                              <FaEdit />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteContact(contact._id)}
+                              className="text-red-500 hover:text-red-600"
+                              title="Delete Contact"
+                            >
+                              <FaTrash />
+                            </button>
+                          </>
+                        )}
+                      </td>
+                    </>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {contacts.length === 0 && (
+            <p className="text-center text-gray-500 py-8">
+              No contacts found in this list.
+            </p>
+          )}
+          {contacts.length > 0 && filteredContacts.length === 0 && (
+            <p className="text-center text-gray-500 py-8">
+              No contacts match your search.
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

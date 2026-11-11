@@ -1,0 +1,686 @@
+// frontend/src/pages/TemplateAnalytics.js
+
+import React, { useState, useEffect, useMemo, useRef } from "react";
+import { useParams } from "react-router-dom";
+import { authFetch } from "../services/api";
+import {
+  FaSort,
+  FaSortUp,
+  FaSortDown,
+  FaCalendarAlt,
+  FaLayerGroup,
+  FaChevronDown,
+  FaCheck,
+} from "react-icons/fa";
+
+// Reusable StatCard
+const StatCard = ({ title, value, className = "", valueClassName = "text-gray-800" }) => (
+  <div
+    className={`bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex flex-col justify-center ${className}`}
+  >
+    <h2 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
+      {title}
+    </h2>
+    <p className={`text-3xl font-bold ${valueClassName}`}>{value}</p>
+  </div>
+);
+
+const formatTemplateName = (name) => {
+  if (!name) return "";
+  return name.replace(/[_-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+};
+
+const pct = (num, den) =>
+  den > 0 ? ((num / den) * 100).toFixed(1) + "%" : "0%";
+
+export default function TemplateAnalytics() {
+  const [analytics, setAnalytics] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const { templateName } = useParams();
+
+  const [dateRangeFilter, setDateRangeFilter] = useState("all_time");
+  const [customStartDate, setCustomStartDate] = useState("");
+  const [customEndDate, setCustomEndDate] = useState("");
+
+  const [selectedSegments, setSelectedSegments] = useState(new Set());
+  const [segmentDropdownOpen, setSegmentDropdownOpen] = useState(false);
+  const segmentDropdownRef = useRef(null);
+
+  const [searchTerm, setSearchTerm] = useState("");
+  const [sortConfig, setSortConfig] = useState({
+    key: "totalSent",
+    direction: "desc",
+  });
+
+  const handleSort = (key) => {
+    setSortConfig((prev) => ({
+      key,
+      direction: prev.key === key && prev.direction === "asc" ? "desc" : "asc",
+    }));
+  };
+
+  useEffect(() => {
+    const handler = (e) => {
+      if (
+        segmentDropdownRef.current &&
+        !segmentDropdownRef.current.contains(e.target)
+      )
+        setSegmentDropdownOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const toggleSegment = (name) =>
+    setSelectedSegments((prev) => {
+      const next = new Set(prev);
+      next.has(name) ? next.delete(name) : next.add(name);
+      return next;
+    });
+
+  const clearSegments = () => setSelectedSegments(new Set());
+  const selectAll = () =>
+    setSelectedSegments(
+      new Set((analytics?.segments || []).map((s) => s.name)),
+    );
+
+  const displayStats = useMemo(() => {
+    if (!analytics) return null;
+    const segments = analytics.segments || [];
+    const active =
+      selectedSegments.size === 0
+        ? null
+        : segments.filter((s) => selectedSegments.has(s.name));
+
+    if (!active) {
+      return {
+        total: analytics.total,
+        sent: analytics.sent || 0,
+        totalDelivered: analytics.totalDelivered,
+        delivered: analytics.delivered,
+        read: analytics.read,
+        replies: analytics.replies,
+        failed: analytics.failed,
+        skipped: analytics.skipped || 0,
+        sentRate: analytics.sentRate || "0%",
+        totalDeliveryRate: analytics.totalDeliveryRate,
+        deliveryRate: analytics.deliveryRate,
+        readRate: analytics.readRate,
+        replyRate: analytics.replyRate,
+        failedRate: analytics.failedRate,
+        skippedRate: analytics.skippedRate || "0%",
+      };
+    }
+
+    const sum = active.reduce(
+      (acc, seg) => ({
+        total: acc.total + (seg.totalSent || 0),
+        sent: acc.sent + (seg.sent || 0),
+        delivered: acc.delivered + (seg.delivered || 0),
+        read: acc.read + (seg.read || 0),
+        failed: acc.failed + (seg.failed || 0),
+        skipped: acc.skipped + (seg.skipped || 0),
+        replies: acc.replies + (seg.replies || 0),
+      }),
+      {
+        total: 0,
+        sent: 0,
+        delivered: 0,
+        read: 0,
+        failed: 0,
+        skipped: 0,
+        replies: 0,
+      },
+    );
+    const totalDelivered = sum.delivered + sum.read;
+    return {
+      ...sum,
+      totalDelivered,
+      sentRate: pct(sum.sent, sum.total),
+      totalDeliveryRate: pct(totalDelivered, sum.total),
+      deliveryRate: pct(sum.delivered, sum.total),
+      readRate: pct(sum.read, sum.total),
+      replyRate: pct(sum.replies, sum.total),
+      failedRate: pct(sum.failed, sum.total),
+      skippedRate: pct(sum.skipped, sum.total),
+    };
+  }, [analytics, selectedSegments]);
+
+  const filteredSegments = useMemo(() => {
+    if (!analytics?.segments) return [];
+    let data = [...analytics.segments];
+    if (searchTerm) {
+      const lower = searchTerm.toLowerCase();
+      data = data.filter((s) => (s.name || "").toLowerCase().includes(lower));
+    }
+    if (sortConfig.key) {
+      data.sort((a, b) => {
+        let av = a[sortConfig.key],
+          bv = b[sortConfig.key];
+        if (typeof av === "string") av = av.toLowerCase();
+        if (typeof bv === "string") bv = bv.toLowerCase();
+        if (av < bv) return sortConfig.direction === "asc" ? -1 : 1;
+        if (av > bv) return sortConfig.direction === "asc" ? 1 : -1;
+        return 0;
+      });
+    }
+    return data;
+  }, [analytics, searchTerm, sortConfig]);
+
+  useEffect(() => {
+    if (!templateName) return;
+    const fetchData = async () => {
+      try {
+        setIsLoading(true);
+        const queryParams = new URLSearchParams();
+        if (dateRangeFilter !== "all_time") {
+          let startDate = new Date(),
+            endDate = new Date();
+          if (dateRangeFilter === "last_24h")
+            startDate.setHours(startDate.getHours() - 24);
+          else if (dateRangeFilter === "last_7d")
+            startDate.setDate(startDate.getDate() - 7);
+          else if (dateRangeFilter === "last_30d")
+            startDate.setDate(startDate.getDate() - 30);
+          else if (dateRangeFilter === "custom") {
+            if (!customStartDate || !customEndDate) {
+              setIsLoading(false);
+              return;
+            }
+            startDate = new Date(customStartDate);
+            endDate = new Date(customEndDate);
+            endDate.setHours(23, 59, 59, 999);
+          }
+          queryParams.append("startDate", startDate.toISOString());
+          queryParams.append("endDate", endDate.toISOString());
+        }
+        const qs = queryParams.toString() ? `?${queryParams.toString()}` : "";
+        const data = await authFetch(
+          `/analytics/template/${templateName}${qs}`,
+        );
+        if (data.success) {
+          setAnalytics(data.data);
+          setSelectedSegments(new Set());
+        }
+      } catch (err) {
+        console.error("Error fetching template analytics:", err);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    fetchData();
+  }, [templateName, dateRangeFilter, customStartDate, customEndDate]);
+
+  if (isLoading && !analytics)
+    return (
+      <p className="bg-gray-50 text-center pt-20 text-gray-500 min-h-screen">
+        Loading template analytics...
+      </p>
+    );
+  if (!analytics && !isLoading)
+    return (
+      <div className="bg-gray-50 min-h-screen w-full flex items-center justify-center">
+        <div className="text-center p-10 bg-white rounded-2xl shadow-sm border border-gray-100 max-w-lg">
+          <div className="text-5xl mb-4">📊</div>
+          <h2 className="text-2xl font-bold text-gray-800 mb-2">No data yet</h2>
+          <p className="text-gray-500">
+            No campaign messages have been sent using{" "}
+            <span className="text-gray-800 font-semibold">
+              {formatTemplateName(templateName)}
+            </span>{" "}
+            yet. Analytics will appear here once a campaign using this template
+            has been sent.
+          </p>
+        </div>
+      </div>
+    );
+
+  const segmentOptions = analytics?.segments || [];
+  const stats = displayStats || {};
+  const noneSelected = selectedSegments.size === 0;
+  const allSelected =
+    selectedSegments.size === segmentOptions.length &&
+    segmentOptions.length > 0;
+  const segmentBtnLabel = noneSelected
+    ? "All Segments"
+    : selectedSegments.size === 1
+      ? [...selectedSegments][0]
+      : `${selectedSegments.size} Segments`;
+
+  return (
+    <div
+      className={`bg-gray-50 min-h-screen w-full ${isLoading ? "opacity-70" : "opacity-100"} transition-opacity`}
+    >
+      <div className="max-w-7xl mx-auto p-4 md:p-8">
+        {/* ── HEADER ── */}
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-800">Template Analytics</h1>
+            <h2 className="text-xl text-gray-500 mt-2">
+              {formatTemplateName(analytics.templateName || templateName)}
+            </h2>
+          </div>
+
+        <div className="flex flex-col sm:flex-row items-center gap-3 flex-wrap">
+          {/* Date Filter */}
+          <div className="flex items-center gap-2 bg-white border border-gray-200 p-2 rounded-lg shadow-sm">
+            <FaCalendarAlt className="text-gray-500 text-sm ml-1" />
+            <select
+              value={dateRangeFilter}
+              onChange={(e) => setDateRangeFilter(e.target.value)}
+              className="bg-gray-50 text-gray-700 text-sm rounded-md px-3 py-2 border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none"
+            >
+              <option value="all_time">All Time</option>
+              <option value="last_24h">Last 24 Hours</option>
+              <option value="last_7d">Last 7 Days</option>
+              <option value="last_30d">Last 30 Days</option>
+              <option value="custom">Custom Range</option>
+            </select>
+            {dateRangeFilter === "custom" && (
+              <div className="flex items-center gap-2">
+                <input
+                  type="date"
+                  value={customStartDate}
+                  onChange={(e) => setCustomStartDate(e.target.value)}
+                  className="bg-gray-50 text-gray-700 text-sm rounded-md px-3 py-2 w-32 border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none"
+                />
+                <span className="text-gray-500 text-xs font-medium">to</span>
+                <input
+                  type="date"
+                  value={customEndDate}
+                  onChange={(e) => setCustomEndDate(e.target.value)}
+                  className="bg-gray-50 text-gray-700 text-sm rounded-md px-3 py-2 w-32 border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none"
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Segment Multi-Select */}
+          {segmentOptions.length > 0 && (
+            <div className="relative" ref={segmentDropdownRef}>
+              <button
+                onClick={() => setSegmentDropdownOpen((o) => !o)}
+                className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all outline-none border shadow-sm
+                  ${
+                    noneSelected
+                      ? "bg-white border-gray-200 text-gray-700 hover:bg-gray-50"
+                      : "bg-emerald-50 border-emerald-200 text-emerald-800 hover:bg-emerald-100"
+                  }`}
+              >
+                <FaLayerGroup
+                  className={
+                    noneSelected ? "text-gray-500" : "text-emerald-600"
+                  }
+                />
+                <span>{segmentBtnLabel}</span>
+                <FaChevronDown
+                  className={`text-xs transition-transform duration-200 ${segmentDropdownOpen ? "rotate-180" : ""}`}
+                />
+              </button>
+
+              {segmentDropdownOpen && (
+                <div
+                  className="absolute right-0 top-full mt-2 z-50 w-68 rounded-xl overflow-hidden shadow-lg border border-gray-100 bg-white"
+                  style={{ minWidth: "260px" }}
+                >
+                  {/* Dropdown header */}
+                  <div className="bg-gray-50 px-4 py-3 flex items-center justify-between border-b border-gray-100">
+                    <span className="text-xs font-bold text-gray-500 uppercase tracking-widest">
+                      Segments
+                    </span>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={allSelected ? clearSegments : selectAll}
+                        className="text-xs text-emerald-600 hover:text-emerald-700 font-medium transition-colors"
+                      >
+                        {allSelected ? "Deselect All" : "Select All"}
+                      </button>
+                      {!noneSelected && (
+                        <button
+                          onClick={clearSegments}
+                          className="text-xs text-gray-500 hover:text-gray-700 transition-colors"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Segment rows */}
+                  <div className="max-h-64 overflow-y-auto">
+                    {segmentOptions.map((seg) => {
+                      const checked = selectedSegments.has(seg.name);
+                      return (
+                        <div
+                          key={seg.name}
+                          onClick={() => toggleSegment(seg.name)}
+                          className={`flex items-center gap-3 px-4 py-3 cursor-pointer transition-all select-none
+                            ${
+                              checked
+                                ? "bg-emerald-50 border-l-2 border-emerald-500"
+                                : "border-l-2 border-transparent hover:bg-gray-50"
+                            }`}
+                        >
+                          {/* Custom check indicator — no white box */}
+                          <div
+                            className={`w-5 h-5 rounded flex items-center justify-center flex-shrink-0 transition-all border
+                            ${
+                              checked
+                                ? "bg-emerald-500 border-emerald-500 shadow-sm"
+                                : "bg-white border-gray-300"
+                            }`}
+                          >
+                            {checked && (
+                              <FaCheck className="text-gray-900 text-[9px]" />
+                            )}
+                          </div>
+
+                          <div className="flex flex-col min-w-0 flex-1">
+                            <span
+                              className={`text-sm font-medium truncate ${checked ? "text-emerald-800" : "text-gray-700"}`}
+                            >
+                              {seg.name}
+                            </span>
+                            <span className="text-xs text-gray-500 mt-0.5">
+                              {seg.totalSent.toLocaleString()} sent
+                            </span>
+                          </div>
+
+                          {/* Mini stats */}
+                          {checked && (
+                            <div className="text-right flex-shrink-0">
+                              <span className="text-xs text-emerald-600 font-medium">
+                                {seg.readRate}
+                              </span>
+                              <p className="text-[10px] text-gray-500">
+                                read rate
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Footer count */}
+                  {!noneSelected && (
+                    <div className="bg-[#F7F8FA] px-4 py-2 border-t border-white/5 text-center">
+                      <span className="text-xs text-gray-500">
+                        <span className="text-emerald-600 font-semibold">
+                          {selectedSegments.size}
+                        </span>{" "}
+                        segment{selectedSegments.size > 1 ? "s" : ""} selected —
+                        stats combined above
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Active segment badges */}
+      {!noneSelected && (
+        <div className="mb-5 flex flex-wrap items-center gap-2">
+          <span className="text-[11px] text-gray-500 uppercase tracking-widest mr-1">
+            Filtering:
+          </span>
+          {[...selectedSegments].map((name) => (
+            <span
+              key={name}
+              className="inline-flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs font-medium px-3 py-1 rounded-full"
+            >
+              {name}
+              <button
+                onClick={() => toggleSegment(name)}
+                className="text-emerald-600/70 hover:text-gray-900 transition-colors ml-0.5 text-[10px]"
+              >
+                ✕
+              </button>
+            </span>
+          ))}
+          <button
+            onClick={clearSegments}
+            className="text-[11px] text-gray-600 hover:text-gray-500 transition-colors underline underline-offset-2 ml-1"
+          >
+            clear all
+          </button>
+        </div>
+      )}
+
+      {/* ── STAT CARDS ── */}
+      {/* PREPARATION STAGE */}
+      <div className="mb-8">
+        <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-3">
+          1. Preparation Phase
+        </h3>
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
+          <StatCard
+            title="Total Uploaded Contacts"
+            value={stats.total ?? 0}
+            className="col-span-1 md:col-span-6 border-l-4 border-violet-700"
+          />
+          <StatCard
+            title="Cleaned / Removed Duplicates"
+            value={`${stats.skipped ?? 0} (${stats.skippedRate ?? "0%"})`}
+            className="col-span-1 md:col-span-6 border-l-4 border-gray-500"
+          />
+        </div>
+      </div>
+
+      {/* DELIVERY STAGE */}
+      <div className="mb-8">
+        <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-3">
+          2. Delivery Phase
+        </h3>
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
+          <StatCard
+            title="Successfully Received"
+            value={`${stats.totalDelivered ?? 0} (${stats.totalDeliveryRate ?? "0%"})`}
+            className="col-span-1 md:col-span-4 border-l-4 border-green-500"
+          />
+          <StatCard
+            title="Failed / Invalid Numbers"
+            value={`${stats.failed ?? 0} (${stats.failedRate ?? "0%"})`}
+            className="col-span-1 md:col-span-4 border-l-4 border-red-500"
+          />
+          <StatCard
+            title="Sending Right Now..."
+            value={`${stats.sent ?? 0} (${stats.sentRate ?? "0%"})`}
+            className="col-span-1 md:col-span-4 border-l-4 border-indigo-500"
+          />
+        </div>
+      </div>
+
+      {/* ENGAGEMENT STAGE */}
+      <div className="mb-8">
+        <h3 className="text-xs font-bold uppercase tracking-wider text-gray-500 mb-3">
+          3. Engagement Phase
+        </h3>
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
+          <StatCard
+            title="Opened / Read"
+            value={`${stats.read ?? 0} (${stats.readRate ?? "0%"})`}
+            className="col-span-1 md:col-span-6 border-l-4 border-green-400"
+          />
+          <StatCard
+            title="Responses"
+            value={`${stats.replies ?? 0} (${stats.replyRate ?? "0%"})`}
+            className="col-span-1 md:col-span-6 border-l-4 border-yellow-500"
+          />
+        </div>
+      </div>
+
+      {/* ── SEGMENT PERFORMANCE TABLE ── */}
+      {segmentOptions.length > 0 && (
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mt-8">
+          <div className="px-6 py-4 border-b border-gray-100 flex flex-col md:flex-row justify-between items-center gap-4">
+            <h3 className="text-xl font-semibold text-gray-800">
+              Segment Performance
+            </h3>
+            <div className="relative w-full md:w-64">
+              <input
+                type="text"
+                placeholder="Search segments..."
+                className="w-full bg-gray-50 text-gray-800 rounded-lg px-4 py-2 pl-10 border border-gray-200 focus:outline-none focus:ring-2 focus:ring-emerald-500 placeholder-gray-400"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+              <div className="absolute left-3 top-2.5 text-gray-500">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="h-4 w-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth="2"
+                    d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+                  />
+                </svg>
+              </div>
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-gray-600 text-sm">
+              <thead className="bg-gray-50 uppercase text-xs font-semibold text-gray-500 border-b border-gray-100">
+                <tr>
+                  {[
+                    { key: "name", label: "Segment Name" },
+                    { key: "totalSent", label: "Total Sent" },
+                    { key: "sent", label: "Sent" },
+                    { key: "delivered", label: "Delivered" },
+                    { key: "read", label: "Read" },
+                    { key: "failed", label: "Failed" },
+                    { key: "skipped", label: "Skipped" },
+                    { key: "replies", label: "Replies" },
+                  ].map((col) => (
+                    <th
+                      key={col.key}
+                      className="px-6 py-4 cursor-pointer hover:bg-gray-100 select-none transition-colors"
+                      onClick={() => handleSort(col.key)}
+                    >
+                      <div className="flex items-center gap-1">
+                        {col.label}
+                        {sortConfig.key === col.key ? (
+                          sortConfig.direction === "asc" ? (
+                            <FaSortUp />
+                          ) : (
+                            <FaSortDown />
+                          )
+                        ) : (
+                          <FaSort className="text-gray-600" />
+                        )}
+                      </div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {filteredSegments.map((seg, idx) => {
+                  const isActive = selectedSegments.has(seg.name);
+                  return (
+                    <tr
+                      key={idx}
+                      onClick={() => toggleSegment(seg.name)}
+                      title={`Click to ${isActive ? "remove" : "add"} "${seg.name}"`}
+                      className={`transition-all cursor-pointer ${
+                        isActive
+                          ? "bg-emerald-50 border-l-2 border-emerald-500 hover:bg-emerald-100"
+                          : "border-l-2 border-transparent hover:bg-gray-50"
+                      }`}
+                    >
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-3 font-medium text-gray-800">
+                          {/* Custom indicator dot/check */}
+                          <div
+                            className={`w-2 h-2 rounded-full flex-shrink-0 transition-all ${
+                              isActive
+                                ? "bg-emerald-500 shadow-sm"
+                                : "bg-gray-300"
+                            }`}
+                          />
+                          {seg.name}
+                          {isActive && (
+                            <span className="text-[10px] text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full font-semibold">
+                              ACTIVE
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 font-medium">{seg.totalSent}</td>
+                      <td className="px-6 py-4">
+                        <span className="text-indigo-600 font-bold">
+                          ➡ {seg.sent}
+                        </span>
+                        <span className="text-xs text-gray-500 ml-1">
+                          ({seg.sentRate})
+                        </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className="text-blue-600 font-bold">
+                          ✔ {seg.delivered}
+                        </span>
+                        <span className="text-xs text-gray-500 ml-1">
+                          ({seg.deliveredRate})
+                        </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className="text-emerald-600 font-bold">
+                          👁 {seg.read}
+                        </span>
+                        <span className="text-xs text-gray-500 ml-1">
+                          ({seg.readRate})
+                        </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className="text-rose-600 font-bold">
+                          ⚠ {seg.failed}
+                        </span>
+                        <span className="text-xs text-gray-500 ml-1">
+                          ({seg.failedRate})
+                        </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className="text-gray-500 font-bold">
+                          ⚠ {seg.skipped}
+                        </span>
+                        <span className="text-xs text-gray-500 ml-1">
+                          ({seg.skippedRate})
+                        </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className="text-yellow-600 font-bold">
+                          ↩ {seg.replies}
+                        </span>
+                        <span className="text-xs text-gray-500 ml-1">
+                          ({seg.replyRate})
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {filteredSegments.length === 0 && (
+                  <tr>
+                    <td
+                      colSpan="8"
+                      className="px-6 py-8 text-center text-gray-500"
+                    >
+                      No segments found matching "{searchTerm}"
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      </div>
+    </div>
+  );
+}
