@@ -310,7 +310,7 @@ export default function FlowBuilder() {
       }
 
       // 4. Convert React Flow Nodes/Edges -> Backend Format
-      const backendNodes = realFrontendNodes.map((node) => {
+      const backendNodes = nodes.map((node) => {
         // Find edges starting from this node
         const connectedEdges = edges.filter((e) => e.source === node.id);
 
