@@ -184,7 +184,7 @@ export default function Navbar() {
                       </NavDropdown>
 
                       {/* 4. AUTOMATION DROPDOWN */}
-                      {user.role === "admin" && (
+                      {user.role !== "viewer" && (
                         <NavDropdown
                           title="Automation"
                           active={[
@@ -193,12 +193,16 @@ export default function Navbar() {
                             "/template-manager",
                           ].includes(location.pathname)}
                         >
-                          <DropdownItem to="/auto-reply">
-                            Auto-Reply
-                          </DropdownItem>
-                          <DropdownItem to="/bot-studio">
-                            Bot Studio
-                          </DropdownItem>
+                          {user.role === "admin" && (
+                            <>
+                              <DropdownItem to="/auto-reply">
+                                Auto-Reply
+                              </DropdownItem>
+                              <DropdownItem to="/bot-studio">
+                                Bot Studio
+                              </DropdownItem>
+                            </>
+                          )}
                           <DropdownItem to="/template-manager">
                             Templates
                           </DropdownItem>
@@ -358,6 +362,15 @@ export default function Navbar() {
                 >
                   Contacts
                 </Disclosure.Button>
+                {user.role !== "viewer" && (
+                  <Disclosure.Button
+                    as={Link}
+                    to="/template-manager"
+                    className="block rounded-md px-3 py-2 text-base font-medium text-gray-300 hover:bg-white/5 hover:text-white"
+                  >
+                    Templates
+                  </Disclosure.Button>
+                )}
                 <Disclosure.Button
                   as="button"
                   onClick={handleLogout}

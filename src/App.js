@@ -186,7 +186,7 @@ function App() {
           <Route
             path="/template-manager"
             element={
-              <ProtectedRoute roles={["admin"]}>
+              <ProtectedRoute roles={["admin", "manager"]}>
                 <TemplateManager />
               </ProtectedRoute>
             }

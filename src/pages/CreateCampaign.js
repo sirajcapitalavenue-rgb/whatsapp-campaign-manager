@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import Select from "react-select";
 import { authFetch } from "../services/api";
@@ -50,6 +50,8 @@ export default function CreateCampaign() {
   // Filtered data
   const [filteredPhones, setFilteredPhones] = useState([]);
   const [filteredTemplates, setFilteredTemplates] = useState([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const isSubmittingRef = useRef(false);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -141,6 +143,9 @@ export default function CreateCampaign() {
 
   const handleCreateCampaign = async (event) => {
     event.preventDefault();
+    if (isSubmittingRef.current || isSubmitting) {
+      return;
+    }
     if (
       !formName ||
       !selectedTemplateObject ||
@@ -149,6 +154,9 @@ export default function CreateCampaign() {
     ) {
       return alert("Please fill out all required fields.");
     }
+
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
 
     // Create FormData for file upload
     const formData = new FormData();
@@ -206,10 +214,14 @@ export default function CreateCampaign() {
         navigate("/");
       } else {
         alert(`Error: ${data.error || "Failed to create campaign"}`);
+        isSubmittingRef.current = false;
+        setIsSubmitting(false);
       }
     } catch (error) {
       console.error("Error creating campaign:", error);
       alert(error.message);
+      isSubmittingRef.current = false;
+      setIsSubmitting(false);
     }
   };
 
@@ -646,11 +658,22 @@ export default function CreateCampaign() {
               {/* Submit Action */}
               <button
                 type="submit"
-                className="w-full bg-gray-900 hover:bg-gray-800 text-white font-bold py-4 rounded-xl shadow-lg transform transition hover:-translate-y-0.5"
+                disabled={isSubmitting}
+                className={`w-full bg-gray-900 text-white font-bold py-4 rounded-xl shadow-lg transform transition ${
+                  isSubmitting
+                    ? "opacity-60 cursor-not-allowed"
+                    : "hover:bg-gray-800 hover:-translate-y-0.5"
+                }`}
               >
                 <span className="flex items-center justify-center gap-2">
                   <PaperAirplaneIcon className="w-5 h-5" />
-                  {scheduledFor ? "Schedule Campaign" : "Launch Campaign Now"}
+                  {isSubmitting
+                    ? headerImageFile
+                      ? "Uploading Media & Creating Campaign..."
+                      : "Creating Campaign..."
+                    : scheduledFor
+                      ? "Schedule Campaign"
+                      : "Launch Campaign Now"}
                 </span>
               </button>
             </div>
