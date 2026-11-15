@@ -165,7 +165,9 @@ export default function CreateCampaign() {
     formData.append("templateName", selectedTemplateObject.name);
     formData.append("templateLanguage", selectedTemplateObject.language);
     formData.append("contactList", selectedList);
-    formData.append("exclusionList", selectedExclusionList);
+    if (selectedExclusionList) {
+      formData.append("exclusionList", selectedExclusionList);
+    }
     formData.append("targetStatuses", JSON.stringify(targetStatuses));
     formData.append("phoneNumber", selectedPhoneNumber);
     formData.append("expectedVariables", expectedVariables);
