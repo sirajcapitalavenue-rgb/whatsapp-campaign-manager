@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useContext, useCallback } from "react";
 import axios from "axios";
 import { API_URL } from "../config";
+import { AuthContext } from "../context/AuthContext";
+import TemplateForm from "../components/TemplateForm";
 import TemplatePreview from "../components/TemplatePreview";
 import {
   PlusIcon,
-  TrashIcon,
   ArrowPathIcon,
   MagnifyingGlassIcon,
   ChatBubbleLeftRightIcon,
@@ -32,15 +33,19 @@ import {
 } from "recharts";
 
 const TemplateManager = () => {
-  const [wabas, setWabas] = useState([]);
-  const [selectedWaba, setSelectedWaba] = useState("");
+  const { authToken } = useContext(AuthContext);
+  const token = authToken || localStorage.getItem("authToken");
+
+  const [wabaAccounts, setWabaAccounts] = useState([]);
+  const [selectedWabaId, setSelectedWabaId] = useState("");
   const [templates, setTemplates] = useState([]);
   const [loading, setLoading] = useState(false);
 
   // Views: 'list', 'create', 'details'
   const [view, setView] = useState("list");
   const [selectedTemplate, setSelectedTemplate] = useState(null);
-  const [isEditing, setIsEditing] = useState(false);
+  const [editTemplateId, setEditTemplateId] = useState(null);
+  const [formError, setFormError] = useState("");
 
   // Analytics State
   const [analyticsData, setAnalyticsData] = useState([]);
@@ -52,29 +57,7 @@ const TemplateManager = () => {
   const [categoryFilter, setCategoryFilter] = useState("ALL");
   const [languageFilter, setLanguageFilter] = useState("ALL");
   const [statusFilter, setStatusFilter] = useState("ALL");
-  const [dateRange, setDateRange] = useState("all"); // Default to 'all' so all historical + recent data shows immediately
-
-  // Form States for Create/Edit
-  const [name, setName] = useState("");
-  const [category, setCategory] = useState("MARKETING");
-  const [language, setLanguage] = useState("en_US");
-  const [headerType, setHeaderType] = useState("NONE");
-  const [headerText, setHeaderText] = useState("");
-  const [headerMediaFile, setHeaderMediaFile] = useState(null);
-  const [headerPreviewUrl, setHeaderPreviewUrl] = useState(null);
-  const [uploadingMedia, setUploadingMedia] = useState(false);
-
-  const [bodyText, setBodyText] = useState("");
-  const [footerText, setFooterText] = useState("");
-  const [buttons, setButtons] = useState([]);
-  const [sampleValues, setSampleValues] = useState({});
-  const [submitting, setSubmitting] = useState(false);
-
-  // Carousel States
-  const [isCarousel, setIsCarousel] = useState(false);
-  const [carouselCards, setCarouselCards] = useState([]);
-
-  const token = localStorage.getItem("token");
+  const [dateRange, setDateRange] = useState("all"); // Default to 'all' so historical + recent data shows immediately
 
   const getDateRangeLabel = (range) => {
     switch (String(range)) {
@@ -91,16 +74,18 @@ const TemplateManager = () => {
     }
   };
 
-  // Fetch WABAs on mount
+  // 1. Fetch WABA Accounts on mount
   useEffect(() => {
+    if (!token) return;
     const fetchWabas = async () => {
       try {
-        const res = await axios.get(`${API_URL}/api/waba`, {
-          headers: { "x-auth-token": token },
+        const res = await axios.get(`${API_URL}/api/waba/accounts`, {
+          headers: { Authorization: `Bearer ${token}` },
         });
-        setWabas(res.data);
-        if (res.data.length > 0) {
-          setSelectedWaba(res.data[0].wabaId);
+        const accounts = res.data?.data || [];
+        setWabaAccounts(accounts);
+        if (accounts.length > 0) {
+          setSelectedWabaId(accounts[0].businessAccountId);
         }
       } catch (err) {
         console.error("Error fetching WABAs:", err);
@@ -109,17 +94,31 @@ const TemplateManager = () => {
     fetchWabas();
   }, [token]);
 
+  // 2. Fetch Templates + Merged Meta/DB Analytics
   const fetchTemplates = useCallback(async () => {
-    if (!selectedWaba) return;
+    if (!selectedWabaId || !token) return;
     setLoading(true);
     try {
-      const res = await axios.get(`${API_URL}/api/templates/${selectedWaba}`, {
-        params: { days: dateRange },
-        headers: { "x-auth-token": token },
-      });
-      const fetched = res.data.data || [];
+      const params = { days: dateRange };
+      if (dateRange !== "all") {
+        const daysNum = parseInt(dateRange, 10) || 30;
+        const end = Math.floor(Date.now() / 1000);
+        const start = end - daysNum * 24 * 60 * 60;
+        params.start = start;
+        params.end = end;
+      }
+
+      const res = await axios.get(
+        `${API_URL}/api/templates/${selectedWabaId}`,
+        {
+          params,
+          headers: { Authorization: `Bearer ${token}` },
+        }
+      );
+      const fetched = res.data?.data || [];
       setTemplates(fetched);
-      // Keep selectedTemplate in sync if currently viewing details
+
+      // Keep selectedTemplate updated if user is in details view
       setSelectedTemplate((prev) => {
         if (!prev) return prev;
         const updated = fetched.find(
@@ -132,492 +131,95 @@ const TemplateManager = () => {
     } finally {
       setLoading(false);
     }
-  }, [selectedWaba, dateRange, token]);
+  }, [selectedWabaId, dateRange, token]);
 
-  // Fetch Templates when WABA or DateRange changes
   useEffect(() => {
-    if (selectedWaba) {
+    if (selectedWabaId) {
       fetchTemplates();
     }
-  }, [selectedWaba, dateRange, fetchTemplates]);
+  }, [selectedWabaId, dateRange, fetchTemplates]);
 
-  // Fetch Detailed Analytics when viewing template details
+  // 3. Fetch Detailed Time-Series & Summary Analytics for a Single Template
   const fetchTemplateAnalytics = useCallback(async () => {
-    if (!selectedWaba || !selectedTemplate) return;
+    if (!selectedWabaId || !selectedTemplate || !token) return;
     setLoadingAnalytics(true);
     try {
+      const params = {
+        templateId: selectedTemplate.id,
+        templateName: selectedTemplate.name,
+        days: dateRange,
+      };
+      if (dateRange !== "all") {
+        const daysNum = parseInt(dateRange, 10) || 30;
+        const end = Math.floor(Date.now() / 1000);
+        const start = end - daysNum * 24 * 60 * 60;
+        params.start = start;
+        params.end = end;
+      }
+
       const res = await axios.get(
-        `${API_URL}/api/templates/${selectedWaba}/analytics`,
+        `${API_URL}/api/templates/${selectedWabaId}/analytics`,
         {
-          params: {
-            templateId: selectedTemplate.id,
-            templateName: selectedTemplate.name,
-            days: dateRange,
-          },
-          headers: { "x-auth-token": token },
+          params,
+          headers: { Authorization: `Bearer ${token}` },
         }
       );
-      setAnalyticsData(res.data.data || []);
-      setAnalyticsSummary(res.data.summary || null);
+      setAnalyticsData(res.data?.data || []);
+      setAnalyticsSummary(res.data?.summary || null);
     } catch (err) {
-      console.error("Error fetching analytics:", err);
+      console.error("Error fetching template analytics:", err);
       setAnalyticsData([]);
       setAnalyticsSummary(null);
     } finally {
       setLoadingAnalytics(false);
     }
-  }, [selectedWaba, selectedTemplate, dateRange, token]);
+  }, [selectedWabaId, selectedTemplate, dateRange, token]);
 
   useEffect(() => {
-    if (view === "details" && selectedTemplate) {
+    if (view === "details" && selectedTemplate && selectedWabaId) {
       fetchTemplateAnalytics();
     }
-  }, [view, selectedTemplate, dateRange, fetchTemplateAnalytics]);
+  }, [view, selectedTemplate, selectedWabaId, dateRange, fetchTemplateAnalytics]);
 
-  const handleEditTemplate = (template) => {
-    setName(template.name);
-    setCategory(template.category);
-    setLanguage(template.language);
-
-    setHeaderType("NONE");
-    setHeaderText("");
-    setHeaderMediaFile(null);
-    setHeaderPreviewUrl(template.headerImageUrl || null);
-    setBodyText("");
-    setFooterText("");
-    setButtons([]);
-    setSampleValues({});
-    setIsCarousel(false);
-    setCarouselCards([]);
-
-    const components = Array.isArray(template.components)
-      ? template.components
-      : [];
-    const carouselComp = components.find((c) => c.type === "CAROUSEL");
-
-    if (carouselComp) {
-      setIsCarousel(true);
-      const bodyComp = components.find((c) => c.type === "BODY");
-      if (bodyComp) setBodyText(bodyComp.text || "");
-
-      const loadedCards = (carouselComp.cards || []).map((card) => {
-        const header = card.components?.find((cc) => cc.type === "HEADER");
-        const body = card.components?.find((cc) => cc.type === "BODY");
-        const buttonsComp = card.components?.find((cc) => cc.type === "BUTTONS");
-        const sampleUrl = header?.example?.header_handle?.[0]?.startsWith("http")
-          ? header.example.header_handle[0]
-          : null;
-        return {
-          headerType: header?.format || "IMAGE",
-          mediaFile: null,
-          previewUrl: sampleUrl,
-          bodyText: body?.text || "",
-          buttons: (buttonsComp?.buttons || []).map((b) => ({
-            type: b.type,
-            text: b.text,
-            url: b.url || "",
-            phone_number: b.phone_number || "",
-          })),
-        };
-      });
-      setCarouselCards(loadedCards);
-    } else {
-      components.forEach((c) => {
-        if (c.type === "HEADER") {
-          setHeaderType(c.format);
-          if (c.format === "TEXT") {
-            setHeaderText(c.text || "");
-          } else if (c.example?.header_handle?.[0]?.startsWith("http")) {
-            setHeaderPreviewUrl(c.example.header_handle[0]);
-          }
-        }
-        if (c.type === "BODY") {
-          setBodyText(c.text || "");
-          if (c.example?.body_text?.[0]) {
-            const examples = c.example.body_text[0];
-            const samples = {};
-            examples.forEach((val, idx) => {
-              samples[`{{${idx + 1}}}`] = val;
-            });
-            setSampleValues(samples);
-          }
-        }
-        if (c.type === "FOOTER") {
-          setFooterText(c.text || "");
-        }
-        if (c.type === "BUTTONS") {
-          setButtons(
-            (c.buttons || []).map((b) => ({
-              type: b.type,
-              text: b.text,
-              url: b.url || "",
-              phone_number: b.phone_number || "",
-            }))
-          );
-        }
-      });
+  // Handle Create / Edit Template Form Submission via TemplateForm
+  const handleFormSubmit = async (formData) => {
+    setLoading(true);
+    setFormError("");
+    try {
+      if (editTemplateId) {
+        await axios.put(
+          `${API_URL}/api/templates/${editTemplateId}`,
+          { wabaId: selectedWabaId, components: formData.components },
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+      } else {
+        await axios.post(
+          `${API_URL}/api/templates`,
+          { wabaId: selectedWabaId, ...formData },
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+      }
+      setView("list");
+      setEditTemplateId(null);
+      setFormError("");
+      fetchTemplates();
+    } catch (err) {
+      setFormError(
+        err.response?.data?.error || "Failed to save template."
+      );
+    } finally {
+      setLoading(false);
     }
+  };
 
-    setIsEditing(true);
+  const handleEditTemplate = (template, e) => {
+    if (e) e.stopPropagation();
+    setEditTemplateId(template.id);
+    setFormError("");
     setView("create");
   };
 
-  const resetForm = () => {
-    setName("");
-    setCategory("MARKETING");
-    setLanguage("en_US");
-    setHeaderType("NONE");
-    setHeaderText("");
-    setHeaderMediaFile(null);
-    setHeaderPreviewUrl(null);
-    setBodyText("");
-    setFooterText("");
-    setButtons([]);
-    setSampleValues({});
-    setIsEditing(false);
-    setIsCarousel(false);
-    setCarouselCards([]);
-  };
-
-  const handleAddButton = () => {
-    if (buttons.length >= 3) return;
-    setButtons([...buttons, { type: "QUICK_REPLY", text: "" }]);
-  };
-
-  const handleRemoveButton = (idx) => {
-    setButtons(buttons.filter((_, i) => i !== idx));
-  };
-
-  const handleButtonChange = (idx, field, val) => {
-    const newButtons = [...buttons];
-    newButtons[idx][field] = val;
-    setButtons(newButtons);
-  };
-
-  const handleAddCard = () => {
-    if (carouselCards.length >= 10) return;
-    setCarouselCards([
-      ...carouselCards,
-      {
-        headerType: "IMAGE",
-        mediaFile: null,
-        previewUrl: null,
-        bodyText: "",
-        buttons: [],
-      },
-    ]);
-  };
-
-  const handleRemoveCard = (idx) => {
-    setCarouselCards(carouselCards.filter((_, i) => i !== idx));
-  };
-
-  const handleCardChange = (idx, field, val) => {
-    const newCards = [...carouselCards];
-    newCards[idx][field] = val;
-    setCarouselCards(newCards);
-  };
-
-  const handleCardFileChange = (idx, e) => {
-    const file = e.target.files[0];
-    if (file) {
-      const newCards = [...carouselCards];
-      newCards[idx].mediaFile = file;
-      newCards[idx].previewUrl = URL.createObjectURL(file);
-      setCarouselCards(newCards);
-    }
-  };
-
-  const handleAddCardButton = (cardIdx) => {
-    const newCards = [...carouselCards];
-    if (newCards[cardIdx].buttons.length >= 2) return;
-    newCards[cardIdx].buttons.push({ type: "QUICK_REPLY", text: "" });
-    setCarouselCards(newCards);
-  };
-
-  const handleRemoveCardButton = (cardIdx, btnIdx) => {
-    const newCards = [...carouselCards];
-    newCards[cardIdx].buttons = newCards[cardIdx].buttons.filter(
-      (_, i) => i !== btnIdx
-    );
-    setCarouselCards(newCards);
-  };
-
-  const handleCardButtonChange = (cardIdx, btnIdx, field, val) => {
-    const newCards = [...carouselCards];
-    newCards[cardIdx].buttons[btnIdx][field] = val;
-    setCarouselCards(newCards);
-  };
-
-  const handleFileChange = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      setHeaderMediaFile(file);
-      setHeaderPreviewUrl(URL.createObjectURL(file));
-    }
-  };
-
-  const uploadMediaToBackend = async (file) => {
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("wabaId", selectedWaba);
-
-    const res = await axios.post(
-      `${API_URL}/api/templates/upload-media`,
-      formData,
-      {
-        headers: {
-          "x-auth-token": token,
-          "Content-Type": "multipart/form-data",
-        },
-      }
-    );
-    return res.data;
-  };
-
-  const handleCreateTemplate = async (e) => {
-    e.preventDefault();
-    setSubmitting(true);
-
-    try {
-      const components = [];
-
-      if (isCarousel) {
-        if (!bodyText) {
-          alert("Carousel templates require a main message body text.");
-          setSubmitting(false);
-          return;
-        }
-        const bodyComponent = { type: "BODY", text: bodyText };
-        const matches = bodyText.match(/\{\{\d+\}\}/g) || [];
-        if (matches.length > 0) {
-          const uniqueVars = [...new Set(matches)].sort();
-          const exampleValues = uniqueVars.map(
-            (v) => sampleValues[v] || "sample"
-          );
-          bodyComponent.example = { body_text: [exampleValues] };
-        }
-        components.push(bodyComponent);
-
-        if (carouselCards.length === 0) {
-          alert("Please add at least one card to the carousel.");
-          setSubmitting(false);
-          return;
-        }
-
-        setUploadingMedia(true);
-        const processedCards = [];
-        for (let i = 0; i < carouselCards.length; i++) {
-          const card = carouselCards[i];
-          const cardComponents = [];
-
-          let handle = null;
-          let publicUrl = null;
-
-          if (card.mediaFile) {
-            try {
-              const uploadData = await uploadMediaToBackend(card.mediaFile);
-              handle = uploadData.handle;
-              publicUrl = uploadData.url;
-            } catch (err) {
-              alert(`Media Upload Failed for Card ${i + 1}. Please try again.`);
-              setUploadingMedia(false);
-              setSubmitting(false);
-              return;
-            }
-          } else {
-            alert(`Please select an image/video for Card ${i + 1}.`);
-            setUploadingMedia(false);
-            setSubmitting(false);
-            return;
-          }
-
-          cardComponents.push({
-            type: "HEADER",
-            format: card.headerType || "IMAGE",
-            example: { header_handle: [handle] },
-          });
-
-          if (publicUrl) {
-            cardComponents[cardComponents.length - 1]._publicUrl = publicUrl;
-          }
-
-          if (!card.bodyText) {
-            alert(`Card ${i + 1} requires body text.`);
-            setUploadingMedia(false);
-            setSubmitting(false);
-            return;
-          }
-          cardComponents.push({
-            type: "BODY",
-            text: card.bodyText,
-          });
-
-          if (card.buttons && card.buttons.length > 0) {
-            const formattedButtons = card.buttons.map((b) => {
-              if (b.type === "URL")
-                return { type: "URL", text: b.text, url: b.url };
-              if (b.type === "PHONE_NUMBER")
-                return {
-                  type: "PHONE_NUMBER",
-                  text: b.text,
-                  phone_number: b.phone_number,
-                };
-              return { type: "QUICK_REPLY", text: b.text };
-            });
-            cardComponents.push({ type: "BUTTONS", buttons: formattedButtons });
-          }
-
-          processedCards.push({ components: cardComponents });
-        }
-        setUploadingMedia(false);
-
-        components.push({
-          type: "CAROUSEL",
-          cards: processedCards,
-        });
-      } else {
-        if (headerType !== "NONE") {
-          if (headerType === "TEXT") {
-            components.push({
-              type: "HEADER",
-              format: "TEXT",
-              text: headerText,
-            });
-          } else {
-            let handle = null;
-            let publicUrl = null;
-            if (headerMediaFile) {
-              setUploadingMedia(true);
-              try {
-                const uploadData = await uploadMediaToBackend(headerMediaFile);
-                handle = uploadData.handle;
-                publicUrl = uploadData.url;
-                setUploadingMedia(false);
-              } catch (uploadErr) {
-                alert("Media Upload Failed. Please try again.");
-                setUploadingMedia(false);
-                setSubmitting(false);
-                return;
-              }
-            } else {
-              alert(
-                `Please select a ${headerType.toLowerCase()} file for the header.`
-              );
-              setSubmitting(false);
-              return;
-            }
-
-            components.push({
-              type: "HEADER",
-              format: headerType,
-              example: {
-                header_handle: [handle],
-              },
-              _publicUrl: publicUrl,
-            });
-          }
-        }
-
-        const bodyComponent = {
-          type: "BODY",
-          text: bodyText,
-        };
-
-        const matches = bodyText.match(/\{\{\d+\}\}/g) || [];
-        if (matches.length > 0) {
-          const uniqueVars = [...new Set(matches)].sort();
-          const exampleValues = uniqueVars.map(
-            (v) => sampleValues[v] || "sample"
-          );
-          bodyComponent.example = {
-            body_text: [exampleValues],
-          };
-        }
-        components.push(bodyComponent);
-
-        if (footerText) {
-          components.push({
-            type: "FOOTER",
-            text: footerText,
-          });
-        }
-
-        if (buttons.length > 0) {
-          const formattedButtons = buttons.map((b) => {
-            if (b.type === "URL")
-              return { type: "URL", text: b.text, url: b.url };
-            if (b.type === "PHONE_NUMBER")
-              return {
-                type: "PHONE_NUMBER",
-                text: b.text,
-                phone_number: b.phone_number,
-              };
-            return { type: "QUICK_REPLY", text: b.text };
-          });
-          components.push({
-            type: "BUTTONS",
-            buttons: formattedButtons,
-          });
-        }
-      }
-
-      const payload = {
-        wabaId: selectedWaba,
-        name: name.toLowerCase().replace(/[^a-z0-9_]/g, "_"),
-        category,
-        language,
-        components,
-      };
-
-      await axios.post(`${API_URL}/api/templates`, payload, {
-        headers: { "x-auth-token": token },
-      });
-
-      alert(
-        isEditing
-          ? "New template version submitted successfully!"
-          : "Template submitted successfully!"
-      );
-      setView("list");
-      resetForm();
-      fetchTemplates();
-    } catch (err) {
-      console.error("Create template error:", err);
-      const msg =
-        err.response?.data?.error?.error?.message ||
-        err.response?.data?.error?.message ||
-        "Failed to create template";
-      alert(`Error: ${msg}`);
-    } finally {
-      setSubmitting(false);
-      setUploadingMedia(false);
-    }
-  };
-
-  const handleDeleteTemplate = async (templateName, e) => {
-    if (e) e.stopPropagation();
-    if (!window.confirm(`Are you sure you want to delete "${templateName}"?`))
-      return;
-
-    try {
-      await axios.delete(
-        `${API_URL}/api/templates/${selectedWaba}/${templateName}`,
-        {
-          headers: { "x-auth-token": token },
-        }
-      );
-      fetchTemplates();
-      if (selectedTemplate?.name === templateName) {
-        setView("list");
-        setSelectedTemplate(null);
-      }
-    } catch (err) {
-      alert("Failed to delete template");
-    }
-  };
-
-  // Filtered Templates
+  // Client-side Filtering
   const filteredTemplates = templates.filter((t) => {
     const matchesSearch = t.name
       .toLowerCase()
@@ -632,7 +234,12 @@ const TemplateManager = () => {
 
   // Extract unique languages from loaded templates for filter dropdown
   const availableLanguages = Array.from(
-    new Set(["en", "en_US", "ar", ...templates.map((t) => t.language).filter(Boolean)])
+    new Set([
+      "en",
+      "en_US",
+      "ar",
+      ...templates.map((t) => t.language).filter(Boolean),
+    ])
   );
 
   const renderStatusBadge = (status) => {
@@ -685,7 +292,7 @@ const TemplateManager = () => {
     );
   };
 
-  // Summary metrics for the whole WABA table
+  // Summary metrics across filtered templates in List View
   const totalTemplatesCount = filteredTemplates.length;
   const totalSentAll = filteredTemplates.reduce(
     (acc, t) => acc + (t.messages_sent || 0),
@@ -704,45 +311,37 @@ const TemplateManager = () => {
     0
   );
 
-  // Metrics for selected template in details view
+  // Metrics for selected template in Details View
   const detailSent =
-    analyticsSummary?.messages_sent ?? selectedTemplate?.messages_sent ?? 0;
+    analyticsSummary?.sent ?? selectedTemplate?.messages_sent ?? 0;
   const detailDelivered =
-    analyticsSummary?.messages_delivered ??
-    selectedTemplate?.messages_delivered ??
-    0;
+    analyticsSummary?.delivered ?? selectedTemplate?.messages_delivered ?? 0;
   const detailRead =
-    analyticsSummary?.messages_read ?? selectedTemplate?.messages_read ?? 0;
+    analyticsSummary?.read ?? selectedTemplate?.messages_read ?? 0;
   const detailReplies =
-    analyticsSummary?.unique_replies ?? selectedTemplate?.unique_replies ?? 0;
+    analyticsSummary?.replies ?? selectedTemplate?.unique_replies ?? 0;
   const detailFailed =
-    analyticsSummary?.messages_failed ?? selectedTemplate?.messages_failed ?? 0;
+    analyticsSummary?.failed ?? selectedTemplate?.messages_failed ?? 0;
   const detailSkipped =
-    analyticsSummary?.messages_skipped ??
-    selectedTemplate?.messages_skipped ??
-    0;
+    analyticsSummary?.skipped ?? selectedTemplate?.messages_skipped ?? 0;
+  const detailCampaignsCount =
+    analyticsSummary?.campaignsCount ?? selectedTemplate?.campaigns_count ?? 0;
   const detailReadRate =
-    analyticsSummary?.read_rate ??
-    selectedTemplate?.read_rate ??
+    analyticsSummary?.readRate ??
+    selectedTemplate?.read_rate_num ??
     (detailDelivered > 0 ? Math.round((detailRead / detailDelivered) * 100) : 0);
   const detailDeliveryRate =
-    analyticsSummary?.delivery_rate ??
-    selectedTemplate?.delivery_rate ??
+    analyticsSummary?.deliveryRate ??
     (detailSent > 0 ? Math.round((detailDelivered / detailSent) * 100) : 0);
   const detailReplyRate =
-    detailDelivered > 0
+    analyticsSummary?.replyRate ??
+    (detailDelivered > 0
       ? Math.min(100, Math.round((detailReplies / detailDelivered) * 100))
-      : 0;
+      : 0);
   const detailAmountSpent =
-    analyticsSummary?.amount_spent ?? selectedTemplate?.amount_spent ?? 0;
-  const detailCostPerMsg =
-    analyticsSummary?.cost_per_message ??
-    selectedTemplate?.cost_per_message ??
-    0;
-  const detailHeaderImage =
-    analyticsSummary?.headerImageUrl ||
-    selectedTemplate?.headerImageUrl ||
-    null;
+    analyticsSummary?.amountSpent || selectedTemplate?.amount_spent || null;
+  const detailCostPerDelivered = analyticsSummary?.costPerDelivered || null;
+  const detailHeaderImage = selectedTemplate?.headerImageUrl || null;
 
   return (
     <div className="min-h-screen bg-slate-50/80 p-4 md:p-6 font-sans text-slate-800">
@@ -774,7 +373,8 @@ const TemplateManager = () => {
               </button>
               <button
                 onClick={() => {
-                  resetForm();
+                  setEditTemplateId(null);
+                  setFormError("");
                   setView("create");
                 }}
                 className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 shadow-sm transition-all"
@@ -830,19 +430,25 @@ const TemplateManager = () => {
           </div>
 
           {/* Filter & Action Toolbar */}
-          <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200/80 space-y-3">
+          <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200/80">
             <div className="flex flex-wrap items-center justify-between gap-3">
               {/* Left side: WABA + Search */}
               <div className="flex flex-wrap items-center gap-2.5 flex-1 min-w-[260px]">
                 {/* WABA Selector */}
                 <select
                   className="h-10 px-3 py-2 text-sm font-medium text-slate-700 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all"
-                  value={selectedWaba}
-                  onChange={(e) => setSelectedWaba(e.target.value)}
+                  value={selectedWabaId}
+                  onChange={(e) => {
+                    setSelectedWabaId(e.target.value);
+                    setTemplates([]);
+                  }}
                 >
-                  {wabas.map((w) => (
-                    <option key={w.wabaId} value={w.wabaId}>
-                      {w.businessName || w.wabaId}
+                  {wabaAccounts.map((w) => (
+                    <option
+                      key={w.businessAccountId}
+                      value={w.businessAccountId}
+                    >
+                      {w.accountName || w.businessAccountId}
                     </option>
                   ))}
                 </select>
@@ -929,14 +535,17 @@ const TemplateManager = () => {
                     <th className="py-3.5 px-3 text-right">Delivered</th>
                     <th className="py-3.5 px-3 text-right">Read Rate</th>
                     <th className="py-3.5 px-3 text-right">Replies</th>
-                    <th className="py-3.5 px-3">Last Updated</th>
+                    <th className="py-3.5 px-3">Last Edited</th>
                     <th className="py-3.5 pl-3 pr-5 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-sm">
                   {loading ? (
                     <tr>
-                      <td colSpan="10" className="text-center py-16 text-slate-400">
+                      <td
+                        colSpan="10"
+                        className="text-center py-16 text-slate-400"
+                      >
                         <div className="flex flex-col items-center justify-center gap-2">
                           <ArrowPathIcon className="w-6 h-6 animate-spin text-blue-600" />
                           <span>Loading templates & analytics...</span>
@@ -945,7 +554,10 @@ const TemplateManager = () => {
                     </tr>
                   ) : filteredTemplates.length === 0 ? (
                     <tr>
-                      <td colSpan="10" className="text-center py-16 text-slate-400">
+                      <td
+                        colSpan="10"
+                        className="text-center py-16 text-slate-400"
+                      >
                         No templates found matching your filters.
                       </td>
                     </tr>
@@ -958,7 +570,11 @@ const TemplateManager = () => {
                       const sentCount = t.messages_sent || 0;
                       const delivCount = t.messages_delivered || 0;
                       const readCount = t.messages_read || 0;
-                      const readRate = t.read_rate || 0;
+                      const readRateNum =
+                        t.read_rate_num ??
+                        (typeof t.read_rate === "number"
+                          ? t.read_rate
+                          : parseInt(String(t.read_rate || "0"), 10) || 0);
                       const repliesCount = t.unique_replies || 0;
 
                       return (
@@ -975,7 +591,7 @@ const TemplateManager = () => {
                               {t.name}
                             </div>
                             <div className="text-xs text-slate-400 truncate mt-0.5 flex items-center gap-1.5">
-                              <ChatBubbleLeftRightIcon className="w-3.5 h-3.5 shrink-0 text-slate-400" />
+                              <ChatBubbleBottomCenterTextIcon className="w-3.5 h-3.5 shrink-0 text-blue-500" />
                               <span className="truncate">{bodyPreview}</span>
                             </div>
                           </td>
@@ -997,22 +613,27 @@ const TemplateManager = () => {
                             </span>
                             {sentCount > 0 && (
                               <span className="text-xs text-slate-400 ml-1">
-                                ({t.delivery_rate || Math.round((delivCount / sentCount) * 100)}%)
+                                (
+                                {t.delivery_rate ||
+                                  `${Math.round(
+                                    (delivCount / sentCount) * 100
+                                  )}%`}
+                                )
                               </span>
                             )}
                           </td>
                           <td className="py-3.5 px-3 text-right whitespace-nowrap">
-                            <div className="inline-flex items-center gap-2">
+                            <div className="inline-flex items-center gap-1.5">
                               <span
                                 className={`font-semibold ${
-                                  readRate >= 50
+                                  readRateNum >= 50
                                     ? "text-emerald-600"
-                                    : readRate > 0
+                                    : readRateNum > 0
                                     ? "text-blue-600"
                                     : "text-slate-500"
                                 }`}
                               >
-                                {readRate}%
+                                {readRateNum}%
                               </span>
                               {readCount > 0 && (
                                 <span className="text-xs text-slate-400">
@@ -1032,36 +653,26 @@ const TemplateManager = () => {
                           </td>
                           <td className="py-3.5 px-3 text-slate-500 text-xs whitespace-nowrap">
                             {t.last_updated_time
-                              ? new Date(t.last_updated_time).toLocaleDateString(
-                                  "en-US",
-                                  {
-                                    month: "short",
-                                    day: "numeric",
-                                    year: "numeric",
-                                  }
-                                )
+                              ? new Date(
+                                  t.last_updated_time
+                                ).toLocaleDateString("en-US", {
+                                  month: "short",
+                                  day: "numeric",
+                                  year: "numeric",
+                                })
                               : "--"}
                           </td>
                           <td
                             className="py-3.5 pl-3 pr-5 text-right whitespace-nowrap"
                             onClick={(e) => e.stopPropagation()}
                           >
-                            <div className="inline-flex items-center gap-1">
-                              <button
-                                onClick={() => handleEditTemplate(t)}
-                                className="p-1.5 rounded-lg text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
-                                title="Edit / New Version"
-                              >
-                                <PencilSquareIcon className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={(e) => handleDeleteTemplate(t.name, e)}
-                                className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
-                                title="Delete Template"
-                              >
-                                <TrashIcon className="w-4 h-4" />
-                              </button>
-                            </div>
+                            <button
+                              onClick={(e) => handleEditTemplate(t, e)}
+                              className="p-1.5 rounded-lg text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                              title="Edit Template"
+                            >
+                              <PencilSquareIcon className="w-4 h-4" />
+                            </button>
                           </td>
                         </tr>
                       );
@@ -1120,12 +731,12 @@ const TemplateManager = () => {
                         })
                       : "Recently"}
                   </span>
-                  {analyticsSummary?.campaigns_count > 0 && (
+                  {detailCampaignsCount > 0 && (
                     <>
                       <span>•</span>
                       <span className="text-blue-600 font-semibold">
-                        Used in {analyticsSummary.campaigns_count} campaign
-                        {analyticsSummary.campaigns_count > 1 ? "s" : ""}
+                        Used in {detailCampaignsCount} campaign
+                        {detailCampaignsCount > 1 ? "s" : ""}
                       </span>
                     </>
                   )}
@@ -1133,7 +744,7 @@ const TemplateManager = () => {
               </div>
             </div>
 
-            {/* Right Toolbar: Cloud API badge, Date Range selector, Refresh, Edit, Delete */}
+            {/* Right Toolbar: Cloud API badge, Date Range selector, Refresh, Edit */}
             <div className="flex flex-wrap items-center gap-2.5">
               <div className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium text-slate-600 bg-slate-100 border border-slate-200">
                 <CloudIcon className="w-4 h-4 text-slate-500" />
@@ -1170,19 +781,11 @@ const TemplateManager = () => {
               </button>
 
               <button
-                onClick={() => handleEditTemplate(selectedTemplate)}
+                onClick={(e) => handleEditTemplate(selectedTemplate, e)}
                 className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 shadow-sm transition-all"
               >
                 <PencilSquareIcon className="w-4 h-4" />
                 Edit template
-              </button>
-
-              <button
-                onClick={(e) => handleDeleteTemplate(selectedTemplate.name, e)}
-                className="inline-flex items-center justify-center h-9 w-9 rounded-lg text-slate-500 bg-white border border-slate-200 hover:text-rose-600 hover:border-rose-200 hover:bg-rose-50 transition-all"
-                title="Delete Template"
-              >
-                <TrashIcon className="w-4 h-4" />
               </button>
             </div>
           </div>
@@ -1203,10 +806,10 @@ const TemplateManager = () => {
                 .
               </p>
             </div>
-            {detailAmountSpent > 0 && (
+            {detailAmountSpent && (
               <div className="text-xs font-semibold text-slate-700 bg-white px-3 py-1 rounded-lg border border-blue-100 whitespace-nowrap">
-                Meta Spend: ${detailAmountSpent.toFixed(2)} ($
-                {detailCostPerMsg.toFixed(3)}/msg)
+                Meta Spend: {detailAmountSpent}
+                {detailCostPerDelivered ? ` (${detailCostPerDelivered}/msg)` : ""}
               </div>
             )}
           </div>
@@ -1217,9 +820,9 @@ const TemplateManager = () => {
             <div className="lg:col-span-4 space-y-3">
               <div className="bg-white rounded-xl border border-slate-200/80 p-4 shadow-sm">
                 <h3 className="font-bold text-slate-800 text-sm mb-3 flex items-center justify-between">
-                  <span>Template Preview</span>
+                  <span>Your template</span>
                   <span className="text-xs font-normal text-slate-400">
-                    WhatsApp Render
+                    WhatsApp Preview
                   </span>
                 </h3>
                 <TemplatePreview
@@ -1317,7 +920,7 @@ const TemplateManager = () => {
                       )}
                     </div>
                     <div className="text-xs text-slate-500 mt-1">
-                      Contacts who responded
+                      Customer responses received
                     </div>
                   </div>
 
@@ -1346,18 +949,18 @@ const TemplateManager = () => {
                   <div className="p-4 rounded-xl border border-slate-200/80 bg-slate-50/50">
                     <div className="flex items-center justify-between text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
                       <span>
-                        {detailAmountSpent > 0 ? "Amount Spent" : "Campaigns Run"}
+                        {detailAmountSpent ? "Amount Spent" : "Campaigns Run"}
                       </span>
                       <SparklesIcon className="w-4 h-4 text-purple-500" />
                     </div>
                     <div className="text-2xl font-bold text-slate-900">
-                      {detailAmountSpent > 0
-                        ? `$${detailAmountSpent.toFixed(2)}`
-                        : analyticsSummary?.campaigns_count ?? 0}
+                      {detailAmountSpent
+                        ? detailAmountSpent
+                        : detailCampaignsCount}
                     </div>
                     <div className="text-xs text-slate-500 mt-1">
-                      {detailAmountSpent > 0
-                        ? `Avg $${detailCostPerMsg.toFixed(3)} per message`
+                      {detailCostPerDelivered
+                        ? `Avg ${detailCostPerDelivered} per message`
                         : "Broadcast campaigns using template"}
                     </div>
                   </div>
@@ -1375,7 +978,9 @@ const TemplateManager = () => {
                     {loadingAnalytics ? (
                       <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-2">
                         <ArrowPathIcon className="w-6 h-6 animate-spin text-blue-600" />
-                        <span className="text-sm">Loading performance chart...</span>
+                        <span className="text-sm">
+                          Loading performance chart...
+                        </span>
                       </div>
                     ) : analyticsData.length === 0 ? (
                       <div className="h-full flex flex-col items-center justify-center text-slate-400 bg-slate-50/60 rounded-xl border border-dashed border-slate-200 p-6 text-center">
@@ -1455,7 +1060,7 @@ const TemplateManager = () => {
                             stroke="#e2e8f0"
                           />
                           <XAxis
-                            dataKey="date"
+                            dataKey="name"
                             tick={{ fontSize: 12, fill: "#64748b" }}
                             axisLine={false}
                             tickLine={false}
@@ -1508,7 +1113,7 @@ const TemplateManager = () => {
                           />
                           <Area
                             type="monotone"
-                            dataKey="replied"
+                            dataKey="replies"
                             name="Unique replies"
                             stroke="#f59e0b"
                             fillOpacity={0}
@@ -1528,549 +1133,22 @@ const TemplateManager = () => {
       {/* CREATE / EDIT VIEW */}
       {view === "create" && (
         <div className="max-w-7xl mx-auto">
-          <div className="mb-4">
-            <button
-              onClick={() => setView("list")}
-              className="inline-flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors"
-            >
-              <ArrowLeftIcon className="w-4 h-4" />
-              Back to templates
-            </button>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-            {/* Form Side */}
-            <div className="lg:col-span-7 bg-white p-6 rounded-xl shadow-sm border border-slate-200/80">
-              <div className="border-b border-slate-100 pb-4 mb-6">
-                <h2 className="text-xl font-bold text-slate-900">
-                  {isEditing
-                    ? `Create New Version from "${name}"`
-                    : "Create New Template"}
-                </h2>
-                <p className="text-xs text-slate-500 mt-1">
-                  Configure your message structure, variables, media header, and interactive buttons
-                </p>
-              </div>
-
-              {isEditing && (
-                <div className="bg-amber-50 border border-amber-200 p-3.5 rounded-xl mb-6 text-xs text-amber-800">
-                  <strong>Note:</strong> Meta does not allow direct editing of active templates. Submitting this form will create a new template (please adjust the name slightly if creating a variation).
-                </div>
-              )}
-
-              <form onSubmit={handleCreateTemplate} className="space-y-6">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                      Template Name
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. welcome_offer_2026"
-                      className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white font-mono"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                    />
-                    <span className="text-[11px] text-slate-400 mt-1 block">
-                      Lowercase letters, numbers, and underscores only
-                    </span>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                      Category
-                    </label>
-                    <select
-                      className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
-                      value={category}
-                      onChange={(e) => setCategory(e.target.value)}
-                    >
-                      <option value="MARKETING">Marketing</option>
-                      <option value="UTILITY">Utility</option>
-                      <option value="AUTHENTICATION">Authentication</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                      Language
-                    </label>
-                    <select
-                      className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
-                      value={language}
-                      onChange={(e) => setLanguage(e.target.value)}
-                    >
-                      <option value="en_US">English (US)</option>
-                      <option value="en">English</option>
-                      <option value="ar">Arabic</option>
-                      <option value="es">Spanish</option>
-                      <option value="fr">French</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                      Template Type
-                    </label>
-                    <div className="flex items-center gap-4 h-10">
-                      <label className="inline-flex items-center gap-2 cursor-pointer text-sm font-medium text-slate-700">
-                        <input
-                          type="radio"
-                          name="templateType"
-                          className="w-4 h-4 text-blue-600 focus:ring-blue-500"
-                          checked={!isCarousel}
-                          onChange={() => setIsCarousel(false)}
-                        />
-                        Standard
-                      </label>
-                      <label className="inline-flex items-center gap-2 cursor-pointer text-sm font-medium text-slate-700">
-                        <input
-                          type="radio"
-                          name="templateType"
-                          className="w-4 h-4 text-blue-600 focus:ring-blue-500"
-                          checked={isCarousel}
-                          onChange={() => {
-                            setIsCarousel(true);
-                            setCategory("MARKETING");
-                            if (carouselCards.length === 0) handleAddCard();
-                          }}
-                        />
-                        Carousel (Multi-Card)
-                      </label>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Standard Header Section */}
-                {!isCarousel && (
-                  <div className="border-t border-slate-100 pt-5">
-                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
-                      Header (Optional)
-                    </label>
-                    <select
-                      className="w-full sm:w-64 h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white mb-3"
-                      value={headerType}
-                      onChange={(e) => {
-                        setHeaderType(e.target.value);
-                        setHeaderMediaFile(null);
-                        setHeaderPreviewUrl(null);
-                      }}
-                    >
-                      <option value="NONE">None</option>
-                      <option value="TEXT">Text</option>
-                      <option value="IMAGE">Image</option>
-                      <option value="VIDEO">Video</option>
-                      <option value="DOCUMENT">Document</option>
-                    </select>
-
-                    {headerType === "TEXT" && (
-                      <input
-                        type="text"
-                        placeholder="Enter header text..."
-                        className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
-                        value={headerText}
-                        onChange={(e) => setHeaderText(e.target.value)}
-                        maxLength={60}
-                      />
-                    )}
-
-                    {["IMAGE", "VIDEO", "DOCUMENT"].includes(headerType) && (
-                      <div className="p-4 border-2 border-dashed border-slate-200 rounded-xl bg-slate-50/50 text-center">
-                        <input
-                          type="file"
-                          onChange={handleFileChange}
-                          accept={
-                            headerType === "IMAGE"
-                              ? "image/*"
-                              : headerType === "VIDEO"
-                              ? "video/*"
-                              : ".pdf"
-                          }
-                          className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer"
-                        />
-                        <p className="text-xs text-slate-400 mt-2">
-                          Upload a sample {headerType.toLowerCase()} for Meta approval & preview.
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Body Text */}
-                <div className="border-t border-slate-100 pt-5">
-                  <div className="flex items-center justify-between mb-1.5">
-                    <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                      Body Text
-                    </label>
-                    <span className="text-xs text-slate-400">
-                      {bodyText.length}/1024
-                    </span>
-                  </div>
-                  <textarea
-                    required
-                    rows={6}
-                    placeholder="Enter the main message body... Use {{1}}, {{2}} for dynamic variables."
-                    className="w-full p-3 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white leading-relaxed"
-                    value={bodyText}
-                    onChange={(e) => setBodyText(e.target.value)}
-                    maxLength={1024}
-                  />
-                </div>
-
-                {/* Variable Samples */}
-                {bodyText.match(/\{\{\d+\}\}/g) && (
-                  <div className="bg-amber-50/70 p-4 rounded-xl border border-amber-200 space-y-3">
-                    <h4 className="text-xs font-bold text-amber-900 uppercase tracking-wider">
-                      Sample Values for Variables (Required by Meta)
-                    </h4>
-                    {[...new Set(bodyText.match(/\{\{\d+\}\}/g))]
-                      .sort()
-                      .map((v) => (
-                        <div key={v} className="flex items-center gap-3">
-                          <span className="text-xs font-mono font-bold text-amber-800 w-12">
-                            {v}
-                          </span>
-                          <input
-                            type="text"
-                            required
-                            placeholder={`Sample value for ${v} (e.g. John)`}
-                            className="flex-1 h-9 px-3 text-sm bg-white border border-amber-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
-                            value={sampleValues[v] || ""}
-                            onChange={(e) =>
-                              setSampleValues({
-                                ...sampleValues,
-                                [v]: e.target.value,
-                              })
-                            }
-                          />
-                        </div>
-                      ))}
-                  </div>
-                )}
-
-                {/* Standard Footer & Buttons */}
-                {!isCarousel && (
-                  <>
-                    <div className="border-t border-slate-100 pt-5">
-                      <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                        Footer (Optional)
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Enter footer text..."
-                        className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
-                        value={footerText}
-                        onChange={(e) => setFooterText(e.target.value)}
-                        maxLength={60}
-                      />
-                    </div>
-
-                    <div className="border-t border-slate-100 pt-5">
-                      <div className="flex items-center justify-between mb-3">
-                        <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                          Interactive Buttons (Optional)
-                        </label>
-                        <button
-                          type="button"
-                          onClick={handleAddButton}
-                          disabled={buttons.length >= 3}
-                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold text-blue-600 bg-blue-50 hover:bg-blue-100 disabled:opacity-40 transition-colors"
-                        >
-                          <PlusIcon className="w-3.5 h-3.5" /> Add Button
-                        </button>
-                      </div>
-
-                      <div className="space-y-3">
-                        {buttons.map((btn, idx) => (
-                          <div
-                            key={idx}
-                            className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 flex flex-col gap-3"
-                          >
-                            <div className="flex items-center gap-2">
-                              <select
-                                className="h-9 px-2.5 text-xs font-medium bg-white border border-slate-200 rounded-lg"
-                                value={btn.type}
-                                onChange={(e) =>
-                                  handleButtonChange(idx, "type", e.target.value)
-                                }
-                              >
-                                <option value="QUICK_REPLY">Quick Reply</option>
-                                <option value="URL">Visit Website (URL)</option>
-                                <option value="PHONE_NUMBER">
-                                  Call Phone Number
-                                </option>
-                              </select>
-                              <input
-                                type="text"
-                                placeholder="Button label text"
-                                required
-                                className="flex-1 h-9 px-3 text-sm bg-white border border-slate-200 rounded-lg"
-                                value={btn.text}
-                                onChange={(e) =>
-                                  handleButtonChange(idx, "text", e.target.value)
-                                }
-                                maxLength={25}
-                              />
-                              <button
-                                type="button"
-                                onClick={() => handleRemoveButton(idx)}
-                                className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg"
-                              >
-                                <TrashIcon className="w-4 h-4" />
-                              </button>
-                            </div>
-                            {btn.type === "URL" && (
-                              <input
-                                type="url"
-                                placeholder="https://example.com"
-                                required
-                                className="w-full h-9 px-3 text-sm bg-white border border-slate-200 rounded-lg"
-                                value={btn.url || ""}
-                                onChange={(e) =>
-                                  handleButtonChange(idx, "url", e.target.value)
-                                }
-                              />
-                            )}
-                            {btn.type === "PHONE_NUMBER" && (
-                              <input
-                                type="tel"
-                                placeholder="+971501234567"
-                                required
-                                className="w-full h-9 px-3 text-sm bg-white border border-slate-200 rounded-lg"
-                                value={btn.phone_number || ""}
-                                onChange={(e) =>
-                                  handleButtonChange(
-                                    idx,
-                                    "phone_number",
-                                    e.target.value
-                                  )
-                                }
-                              />
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </>
-                )}
-
-                {/* Carousel Cards Configuration */}
-                {isCarousel && (
-                  <div className="border-t border-slate-100 pt-5 space-y-4">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                        Carousel Cards ({carouselCards.length}/10)
-                      </label>
-                      <button
-                        type="button"
-                        onClick={handleAddCard}
-                        disabled={carouselCards.length >= 10}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold text-blue-600 bg-blue-50 hover:bg-blue-100 disabled:opacity-40"
-                      >
-                        <PlusIcon className="w-3.5 h-3.5" /> Add Card
-                      </button>
-                    </div>
-
-                    <div className="space-y-4">
-                      {carouselCards.map((card, cIdx) => (
-                        <div
-                          key={cIdx}
-                          className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3"
-                        >
-                          <div className="flex items-center justify-between border-b border-slate-200 pb-2">
-                            <h4 className="font-bold text-slate-700 text-sm">
-                              Card #{cIdx + 1}
-                            </h4>
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveCard(cIdx)}
-                              className="text-rose-500 hover:bg-rose-50 p-1 rounded"
-                            >
-                              <TrashIcon className="w-4 h-4" />
-                            </button>
-                          </div>
-
-                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                            <select
-                              className="h-9 px-2.5 text-xs bg-white border border-slate-200 rounded-lg"
-                              value={card.headerType}
-                              onChange={(e) =>
-                                handleCardChange(
-                                  cIdx,
-                                  "headerType",
-                                  e.target.value
-                                )
-                              }
-                            >
-                              <option value="IMAGE">Image</option>
-                              <option value="VIDEO">Video</option>
-                            </select>
-                            <input
-                              type="file"
-                              onChange={(e) => handleCardFileChange(cIdx, e)}
-                              accept={
-                                card.headerType === "IMAGE"
-                                  ? "image/*"
-                                  : "video/*"
-                              }
-                              className="sm:col-span-2 text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700"
-                            />
-                          </div>
-
-                          <textarea
-                            rows={2}
-                            required
-                            placeholder="Card description text..."
-                            className="w-full p-2.5 text-sm bg-white border border-slate-200 rounded-lg"
-                            value={card.bodyText}
-                            onChange={(e) =>
-                              handleCardChange(cIdx, "bodyText", e.target.value)
-                            }
-                            maxLength={160}
-                          />
-
-                          <div className="space-y-2">
-                            <div className="flex items-center justify-between">
-                              <span className="text-xs font-semibold text-slate-500">
-                                Card Buttons ({card.buttons.length}/2)
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => handleAddCardButton(cIdx)}
-                                disabled={card.buttons.length >= 2}
-                                className="text-xs font-semibold text-blue-600 hover:underline disabled:opacity-40"
-                              >
-                                + Add Button
-                              </button>
-                            </div>
-                            {card.buttons.map((btn, bIdx) => (
-                              <div
-                                key={bIdx}
-                                className="p-2.5 bg-white rounded-lg border border-slate-200 space-y-2"
-                              >
-                                <div className="flex items-center gap-2">
-                                  <select
-                                    className="h-8 px-2 text-xs bg-slate-50 border border-slate-200 rounded"
-                                    value={btn.type}
-                                    onChange={(e) =>
-                                      handleCardButtonChange(
-                                        cIdx,
-                                        bIdx,
-                                        "type",
-                                        e.target.value
-                                      )
-                                    }
-                                  >
-                                    <option value="QUICK_REPLY">Reply</option>
-                                    <option value="URL">URL</option>
-                                    <option value="PHONE_NUMBER">Phone</option>
-                                  </select>
-                                  <input
-                                    type="text"
-                                    placeholder="Label"
-                                    required
-                                    className="flex-1 h-8 px-2.5 text-xs border border-slate-200 rounded"
-                                    value={btn.text}
-                                    onChange={(e) =>
-                                      handleCardButtonChange(
-                                        cIdx,
-                                        bIdx,
-                                        "text",
-                                        e.target.value
-                                      )
-                                    }
-                                    maxLength={25}
-                                  />
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      handleRemoveCardButton(cIdx, bIdx)
-                                    }
-                                    className="text-rose-500 p-1"
-                                  >
-                                    <TrashIcon className="w-3.5 h-3.5" />
-                                  </button>
-                                </div>
-                                {btn.type === "URL" && (
-                                  <input
-                                    type="url"
-                                    placeholder="https://example.com"
-                                    required
-                                    className="w-full h-8 px-2.5 text-xs border border-slate-200 rounded"
-                                    value={btn.url || ""}
-                                    onChange={(e) =>
-                                      handleCardButtonChange(
-                                        cIdx,
-                                        bIdx,
-                                        "url",
-                                        e.target.value
-                                      )
-                                    }
-                                  />
-                                )}
-                                {btn.type === "PHONE_NUMBER" && (
-                                  <input
-                                    type="tel"
-                                    placeholder="+971501234567"
-                                    required
-                                    className="w-full h-8 px-2.5 text-xs border border-slate-200 rounded"
-                                    value={btn.phone_number || ""}
-                                    onChange={(e) =>
-                                      handleCardButtonChange(
-                                        cIdx,
-                                        bIdx,
-                                        "phone_number",
-                                        e.target.value
-                                      )
-                                    }
-                                  />
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                <div className="pt-4 border-t border-slate-100">
-                  <button
-                    type="submit"
-                    disabled={submitting || uploadingMedia}
-                    className="w-full h-11 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm shadow-sm transition-all disabled:opacity-50"
-                  >
-                    {uploadingMedia
-                      ? "Uploading Media to Meta..."
-                      : submitting
-                      ? "Submitting Template..."
-                      : "Submit Template for Approval"}
-                  </button>
-                </div>
-              </form>
-            </div>
-
-            {/* Live Preview Side */}
-            <div className="lg:col-span-5 sticky top-6">
-              <div className="bg-white p-5 rounded-xl border border-slate-200/80 shadow-sm">
-                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 text-center">
-                  Live WhatsApp Preview
-                </h3>
-                <TemplatePreview
-                  headerType={headerType}
-                  headerText={headerText}
-                  headerMediaUrl={headerPreviewUrl}
-                  bodyText={bodyText}
-                  footerText={footerText}
-                  buttons={buttons}
-                  isCarousel={isCarousel}
-                  carouselCards={carouselCards}
-                />
-              </div>
-            </div>
-          </div>
+          <TemplateForm
+            initialData={
+              editTemplateId
+                ? templates.find((t) => t.id === editTemplateId)
+                : null
+            }
+            wabaId={selectedWabaId}
+            authToken={token}
+            onSubmit={handleFormSubmit}
+            onCancel={() => {
+              setView("list");
+              setEditTemplateId(null);
+            }}
+            loading={loading}
+            error={formError}
+          />
         </div>
       )}
     </div>
