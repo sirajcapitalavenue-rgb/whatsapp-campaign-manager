@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import {
   PhotoIcon,
   VideoCameraIcon,
@@ -17,6 +17,12 @@ const TemplatePreview = ({
   isCarousel,
   carouselCards,
 }) => {
+  const [imgError, setImgError] = useState(false);
+
+  useEffect(() => {
+    setImgError(false);
+  }, [template, headerMediaUrl]);
+
   // Logic to handle both passed template object OR individual props (for form preview)
   const isStatic = !!template;
 
@@ -32,21 +38,22 @@ const TemplatePreview = ({
   if (isStatic && template) {
     pHeaderType = "NONE";
     pHeaderText = "";
-    pHeaderMediaUrl = null;
+    pHeaderMediaUrl = headerMediaUrl || template.headerImageUrl || null;
     pBodyText = "";
     pFooterText = "";
     pButtons = [];
     pIsCarousel = false;
     pCarouselCards = [];
 
-    const carouselComp = template.components.find((c) => c.type === "CAROUSEL");
+    const components = Array.isArray(template.components) ? template.components : [];
+    const carouselComp = components.find((c) => c.type === "CAROUSEL");
     if (carouselComp) {
       pIsCarousel = true;
-      pBodyText = template.components.find((c) => c.type === "BODY")?.text || "";
-      pCarouselCards = carouselComp.cards.map((card) => {
-        const header = card.components.find((cc) => cc.type === "HEADER");
-        const body = card.components.find((cc) => cc.type === "BODY");
-        const cardButtons = card.components.find((cc) => cc.type === "BUTTONS");
+      pBodyText = components.find((c) => c.type === "BODY")?.text || "";
+      pCarouselCards = (carouselComp.cards || []).map((card) => {
+        const header = card.components?.find((cc) => cc.type === "HEADER");
+        const body = card.components?.find((cc) => cc.type === "BODY");
+        const cardButtons = card.components?.find((cc) => cc.type === "BUTTONS");
         
         let sampleUrl = "";
         if (header?.example?.header_handle?.[0]) {
@@ -61,15 +68,19 @@ const TemplatePreview = ({
         };
       });
     } else {
-      template.components.forEach((c) => {
+      components.forEach((c) => {
         if (c.type === "HEADER") {
           pHeaderType = c.format;
-          if (c.format === "TEXT") pHeaderText = c.text;
+          if (c.format === "TEXT") {
+            pHeaderText = c.text;
+          } else if (!pHeaderMediaUrl && c.example?.header_handle?.[0]?.startsWith("http")) {
+            pHeaderMediaUrl = c.example.header_handle[0];
+          }
         }
         if (c.type === "BODY") pBodyText = c.text;
         if (c.type === "FOOTER") pFooterText = c.text;
         if (c.type === "BUTTONS") {
-          pButtons = c.buttons;
+          pButtons = c.buttons || [];
         }
       });
     }
@@ -220,15 +231,16 @@ const TemplatePreview = ({
           <div className="bg-white rounded-lg p-2 shadow-sm max-w-[85%] self-start relative">
             {/* Header Media */}
             {pHeaderType === "IMAGE" && (
-              <div className="rounded-t-lg bg-gray-200 h-32 flex items-center justify-center overflow-hidden mb-2">
-                {pHeaderMediaUrl ? (
+              <div className="rounded-t-lg bg-gray-200 min-h-[8rem] max-h-52 flex items-center justify-center overflow-hidden mb-2">
+                {pHeaderMediaUrl && !imgError ? (
                   <img
                     src={pHeaderMediaUrl}
                     alt="Header"
                     className="w-full h-full object-cover"
+                    onError={() => setImgError(true)}
                   />
                 ) : (
-                  <span className="flex items-center gap-1 text-gray-500 text-xs font-medium">
+                  <span className="flex items-center gap-1 text-gray-500 text-xs font-medium py-12">
                     <PhotoIcon className="w-4 h-4" /> Image Header
                   </span>
                 )}

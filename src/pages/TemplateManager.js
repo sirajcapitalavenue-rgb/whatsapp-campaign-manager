@@ -1,26 +1,28 @@
-import React, { useState, useEffect, useContext, useRef } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import axios from "axios";
 import { API_URL } from "../config";
-import { AuthContext } from "../context/AuthContext";
+import TemplatePreview from "../components/TemplatePreview";
 import {
-  ChatBubbleLeftRightIcon,
+  PlusIcon,
+  TrashIcon,
+  ArrowPathIcon,
   MagnifyingGlassIcon,
-  ExclamationCircleIcon,
-  PencilSquareIcon,
-  Cog6ToothIcon,
-  ChevronDownIcon,
-  ChatBubbleBottomCenterTextIcon,
-  ChevronRightIcon,
-  ClockIcon,
-  CloudIcon,
-  EllipsisHorizontalIcon,
+  ChatBubbleLeftRightIcon,
+  ArrowLeftIcon,
   InformationCircleIcon,
+  PencilSquareIcon,
+  CalendarIcon,
+  CloudIcon,
+  CheckCircleIcon,
+  PaperAirplaneIcon,
+  EyeIcon,
+  ChatBubbleBottomCenterTextIcon,
+  ExclamationTriangleIcon,
+  SparklesIcon,
 } from "@heroicons/react/24/outline";
-
-// Recharts for Analytics Graph
 import {
-  LineChart,
-  Line,
+  AreaChart,
+  Area,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -28,952 +30,2049 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts";
-import TemplateForm from "../components/TemplateForm";
-import TemplatePreview from "../components/TemplatePreview";
-
-// Helper to format date like "Jan 6, 2026"
-const formatDate = (dateString) => {
-  if (!dateString) return "--";
-  return new Date(dateString).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
-};
-
-// Helper to extract body snippet
-const getBodySnippet = (components) => {
-  const body = components.find((c) => c.type === "BODY");
-  if (!body || !body.text) return "";
-  return body.text.length > 30 ? body.text.substring(0, 30) + "..." : body.text;
-};
-
-// --- CUSTOM HOOK FOR OUTSIDE CLICK ---
-function useOutsideAlerter(ref, callback) {
-  useEffect(() => {
-    function handleClickOutside(event) {
-      if (ref.current && !ref.current.contains(event.target)) {
-        callback();
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-    };
-  }, [ref, callback]);
-}
 
 const TemplateManager = () => {
-  const { authToken } = useContext(AuthContext);
-  const [wabaAccounts, setWabaAccounts] = useState([]);
-  const [selectedWabaId, setSelectedWabaId] = useState("");
+  const [wabas, setWabas] = useState([]);
+  const [selectedWaba, setSelectedWaba] = useState("");
   const [templates, setTemplates] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [view, setView] = useState("list"); // list, create, details
-  const [editTemplateId, setEditTemplateId] = useState(null);
-  const [selectedTemplate, setSelectedTemplate] = useState(null); // For Details View
-  const [analyticsData, setAnalyticsData] = useState({}); // Detailed time-series data
 
-  // --- FILTERS STATE ---
+  // Views: 'list', 'create', 'details'
+  const [view, setView] = useState("list");
+  const [selectedTemplate, setSelectedTemplate] = useState(null);
+  const [isEditing, setIsEditing] = useState(false);
+
+  // Analytics State
+  const [analyticsData, setAnalyticsData] = useState([]);
+  const [analyticsSummary, setAnalyticsSummary] = useState(null);
+  const [loadingAnalytics, setLoadingAnalytics] = useState(false);
+
+  // Filter States
   const [searchQuery, setSearchQuery] = useState("");
-  const [selectedCategories, setSelectedCategories] = useState([]);
-  const [selectedLanguages, setSelectedLanguages] = useState([]);
-  const [selectedStatuses, setSelectedStatuses] = useState([]);
-  const [dateRange, setDateRange] = useState(7);
+  const [categoryFilter, setCategoryFilter] = useState("ALL");
+  const [languageFilter, setLanguageFilter] = useState("ALL");
+  const [statusFilter, setStatusFilter] = useState("ALL");
+  const [dateRange, setDateRange] = useState("all"); // Default to 'all' so all historical + recent data shows immediately
 
-  // Dropdown visibility states
-  const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
-  const [showLanguageDropdown, setShowLanguageDropdown] = useState(false);
-  const [showStatusDropdown, setShowStatusDropdown] = useState(false);
-  const [showDateDropdown, setShowDateDropdown] = useState(false);
+  // Form States for Create/Edit
+  const [name, setName] = useState("");
+  const [category, setCategory] = useState("MARKETING");
+  const [language, setLanguage] = useState("en_US");
+  const [headerType, setHeaderType] = useState("NONE");
+  const [headerText, setHeaderText] = useState("");
+  const [headerMediaFile, setHeaderMediaFile] = useState(null);
+  const [headerPreviewUrl, setHeaderPreviewUrl] = useState(null);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
 
-  // Refs for outside click
-  const catRef = useRef(null);
-  const langRef = useRef(null);
-  const statusRef = useRef(null);
-  const dateRef = useRef(null);
+  const [bodyText, setBodyText] = useState("");
+  const [footerText, setFooterText] = useState("");
+  const [buttons, setButtons] = useState([]);
+  const [sampleValues, setSampleValues] = useState({});
+  const [submitting, setSubmitting] = useState(false);
 
-  useOutsideAlerter(catRef, () => setShowCategoryDropdown(false));
-  useOutsideAlerter(langRef, () => setShowLanguageDropdown(false));
-  useOutsideAlerter(statusRef, () => setShowStatusDropdown(false));
-  useOutsideAlerter(dateRef, () => setShowDateDropdown(false));
+  // Carousel States
+  const [isCarousel, setIsCarousel] = useState(false);
+  const [carouselCards, setCarouselCards] = useState([]);
 
-  // --- CREATE FORM STATE ---
-  // Form state is now handled by TemplateForm component
-  const [formError, setFormError] = useState("");
-  // const [formSuccess, setFormSuccess] = useState(""); // REMOVED unused
+  const token = localStorage.getItem("token");
 
-  const fetchTemplates = React.useCallback(async () => {
+  const getDateRangeLabel = (range) => {
+    switch (String(range)) {
+      case "7":
+        return "Last 7 days";
+      case "30":
+        return "Last 30 days";
+      case "60":
+        return "Last 60 days";
+      case "90":
+        return "Last 90 days";
+      default:
+        return "All time";
+    }
+  };
+
+  // Fetch WABAs on mount
+  useEffect(() => {
+    const fetchWabas = async () => {
+      try {
+        const res = await axios.get(`${API_URL}/api/waba`, {
+          headers: { "x-auth-token": token },
+        });
+        setWabas(res.data);
+        if (res.data.length > 0) {
+          setSelectedWaba(res.data[0].wabaId);
+        }
+      } catch (err) {
+        console.error("Error fetching WABAs:", err);
+      }
+    };
+    fetchWabas();
+  }, [token]);
+
+  const fetchTemplates = useCallback(async () => {
+    if (!selectedWaba) return;
     setLoading(true);
     try {
-      // Construct Query Params
-      const params = {};
-      if (searchQuery) params.name = searchQuery;
-      if (selectedCategories.length > 0)
-        params.category = selectedCategories.join(",");
-      if (selectedLanguages.length > 0)
-        params.language = selectedLanguages.join(",");
-
-      const validMetaStatuses = ["APPROVED", "REJECTED", "PENDING", "PAUSED"];
-      const statusFilters = selectedStatuses.filter((s) =>
-        validMetaStatuses.includes(s),
-      );
-      if (statusFilters.length > 0) params.status = statusFilters.join(",");
-
-      // Analytics Date Range
-      if (dateRange) {
-        const end = Math.floor(Date.now() / 1000);
-        const start = Math.floor(Date.now() / 1000) - dateRange * 24 * 60 * 60;
-        params.start = start;
-        params.end = end;
-      }
-
-      const res = await axios.get(
-        `${API_URL}/api/templates/${selectedWabaId}`,
-        {
-          params,
-          headers: { Authorization: `Bearer ${authToken}` },
-        },
-      );
-
-      setTemplates(res.data.data);
+      const res = await axios.get(`${API_URL}/api/templates/${selectedWaba}`, {
+        params: { days: dateRange },
+        headers: { "x-auth-token": token },
+      });
+      const fetched = res.data.data || [];
+      setTemplates(fetched);
+      // Keep selectedTemplate in sync if currently viewing details
+      setSelectedTemplate((prev) => {
+        if (!prev) return prev;
+        const updated = fetched.find(
+          (t) => t.id === prev.id || t.name === prev.name
+        );
+        return updated || prev;
+      });
     } catch (err) {
-      console.error("Failed to fetch templates", err);
+      console.error("Error fetching templates:", err);
     } finally {
       setLoading(false);
     }
-  }, [
-    searchQuery,
-    selectedCategories,
-    selectedLanguages,
-    selectedStatuses,
-    dateRange,
-    selectedWabaId,
-    authToken,
-  ]);
+  }, [selectedWaba, dateRange, token]);
 
-  const fetchTemplateAnalytics = React.useCallback(async () => {
+  // Fetch Templates when WABA or DateRange changes
+  useEffect(() => {
+    if (selectedWaba) {
+      fetchTemplates();
+    }
+  }, [selectedWaba, dateRange, fetchTemplates]);
+
+  // Fetch Detailed Analytics when viewing template details
+  const fetchTemplateAnalytics = useCallback(async () => {
+    if (!selectedWaba || !selectedTemplate) return;
+    setLoadingAnalytics(true);
     try {
-      const end = Math.floor(Date.now() / 1000);
-      const start = Math.floor(Date.now() / 1000) - dateRange * 24 * 60 * 60;
-
       const res = await axios.get(
-        `${API_URL}/api/templates/${selectedWabaId}/analytics`,
+        `${API_URL}/api/templates/${selectedWaba}/analytics`,
         {
           params: {
-            templateId: selectedTemplate ? selectedTemplate.id : null,
-            start,
-            end,
+            templateId: selectedTemplate.id,
+            templateName: selectedTemplate.name,
+            days: dateRange,
           },
-          headers: { Authorization: `Bearer ${authToken}` },
-        },
-      );
-
-      setAnalyticsData(res.data);
-    } catch (err) {
-      console.error("Failed to fetch template analytics", err);
-      // Fallback or empty chart will render
-      setAnalyticsData({});
-    }
-  }, [dateRange, selectedWabaId, selectedTemplate, authToken]);
-
-  useEffect(() => {
-    const fetchWaba = async () => {
-      try {
-        const res = await axios.get(`${API_URL}/api/waba/accounts`, {
-          headers: { Authorization: `Bearer ${authToken}` },
-        });
-        const accounts = res.data.data || [];
-        setWabaAccounts(accounts);
-        if (accounts.length > 0) {
-          setSelectedWabaId(accounts[0].businessAccountId);
+          headers: { "x-auth-token": token },
         }
-      } catch (err) {
-        console.error("Failed to fetch WABA accounts", err);
-      }
-    };
-    fetchWaba();
-  }, [authToken]);
-
-  // Fetch Templates whenever filters change
-  useEffect(() => {
-    if (selectedWabaId && view === "list") {
-      // Debounce search slightly
-      const timer = setTimeout(() => {
-        fetchTemplates();
-      }, 300);
-      return () => clearTimeout(timer);
+      );
+      setAnalyticsData(res.data.data || []);
+      setAnalyticsSummary(res.data.summary || null);
+    } catch (err) {
+      console.error("Error fetching analytics:", err);
+      setAnalyticsData([]);
+      setAnalyticsSummary(null);
+    } finally {
+      setLoadingAnalytics(false);
     }
-  }, [
-    selectedWabaId,
-    view,
-    searchQuery,
-    selectedStatuses,
-    dateRange,
-    fetchTemplates, // Added dependency
-  ]);
+  }, [selectedWaba, selectedTemplate, dateRange, token]);
 
-  // Fetch Analytics when selectedTemplate changes
   useEffect(() => {
-    if (view === "details" && selectedTemplate && selectedWabaId) {
+    if (view === "details" && selectedTemplate) {
       fetchTemplateAnalytics();
     }
-  }, [
-    view,
-    selectedTemplate,
-    selectedWabaId,
-    dateRange,
-    fetchTemplateAnalytics,
-  ]);
+  }, [view, selectedTemplate, dateRange, fetchTemplateAnalytics]);
 
-  // --- HANDLERS for Filter Toggles ---
-  const toggleCategory = (cat) => {
-    setSelectedCategories((prev) =>
-      prev.includes(cat) ? prev.filter((c) => c !== cat) : [...prev, cat],
-    );
-  };
+  const handleEditTemplate = (template) => {
+    setName(template.name);
+    setCategory(template.category);
+    setLanguage(template.language);
 
-  const toggleLanguage = (lang) => {
-    setSelectedLanguages((prev) =>
-      prev.includes(lang) ? prev.filter((l) => l !== lang) : [...prev, lang],
-    );
-  };
+    setHeaderType("NONE");
+    setHeaderText("");
+    setHeaderMediaFile(null);
+    setHeaderPreviewUrl(template.headerImageUrl || null);
+    setBodyText("");
+    setFooterText("");
+    setButtons([]);
+    setSampleValues({});
+    setIsCarousel(false);
+    setCarouselCards([]);
 
-  const toggleStatus = (statusKey) => {
-    setSelectedStatuses((prev) =>
-      prev.includes(statusKey)
-        ? prev.filter((s) => s !== statusKey)
-        : [...prev, statusKey],
-    );
-  };
+    const components = Array.isArray(template.components)
+      ? template.components
+      : [];
+    const carouselComp = components.find((c) => c.type === "CAROUSEL");
 
-  const selectAllStatuses = () => {
-    const all = ["APPROVED", "REJECTED", "PENDING", "PAUSED"];
-    if (selectedStatuses.length === all.length) setSelectedStatuses([]);
-    else setSelectedStatuses(all);
-  };
+    if (carouselComp) {
+      setIsCarousel(true);
+      const bodyComp = components.find((c) => c.type === "BODY");
+      if (bodyComp) setBodyText(bodyComp.text || "");
 
-  // --- EDITOR HANDLERS ---
-  const handleEdit = (template) => {
-    setEditTemplateId(template.id);
+      const loadedCards = (carouselComp.cards || []).map((card) => {
+        const header = card.components?.find((cc) => cc.type === "HEADER");
+        const body = card.components?.find((cc) => cc.type === "BODY");
+        const buttonsComp = card.components?.find((cc) => cc.type === "BUTTONS");
+        const sampleUrl = header?.example?.header_handle?.[0]?.startsWith("http")
+          ? header.example.header_handle[0]
+          : null;
+        return {
+          headerType: header?.format || "IMAGE",
+          mediaFile: null,
+          previewUrl: sampleUrl,
+          bodyText: body?.text || "",
+          buttons: (buttonsComp?.buttons || []).map((b) => ({
+            type: b.type,
+            text: b.text,
+            url: b.url || "",
+            phone_number: b.phone_number || "",
+          })),
+        };
+      });
+      setCarouselCards(loadedCards);
+    } else {
+      components.forEach((c) => {
+        if (c.type === "HEADER") {
+          setHeaderType(c.format);
+          if (c.format === "TEXT") {
+            setHeaderText(c.text || "");
+          } else if (c.example?.header_handle?.[0]?.startsWith("http")) {
+            setHeaderPreviewUrl(c.example.header_handle[0]);
+          }
+        }
+        if (c.type === "BODY") {
+          setBodyText(c.text || "");
+          if (c.example?.body_text?.[0]) {
+            const examples = c.example.body_text[0];
+            const samples = {};
+            examples.forEach((val, idx) => {
+              samples[`{{${idx + 1}}}`] = val;
+            });
+            setSampleValues(samples);
+          }
+        }
+        if (c.type === "FOOTER") {
+          setFooterText(c.text || "");
+        }
+        if (c.type === "BUTTONS") {
+          setButtons(
+            (c.buttons || []).map((b) => ({
+              type: b.type,
+              text: b.text,
+              url: b.url || "",
+              phone_number: b.phone_number || "",
+            }))
+          );
+        }
+      });
+    }
+
+    setIsEditing(true);
     setView("create");
   };
 
-  const handleFormSubmit = async (formData) => {
-    setLoading(true);
-    setFormError("");
-    // setFormSuccess(""); // unused
+  const resetForm = () => {
+    setName("");
+    setCategory("MARKETING");
+    setLanguage("en_US");
+    setHeaderType("NONE");
+    setHeaderText("");
+    setHeaderMediaFile(null);
+    setHeaderPreviewUrl(null);
+    setBodyText("");
+    setFooterText("");
+    setButtons([]);
+    setSampleValues({});
+    setIsEditing(false);
+    setIsCarousel(false);
+    setCarouselCards([]);
+  };
 
-    try {
-      if (editTemplateId) {
-        await axios.put(
-          `${API_URL}/api/templates/${editTemplateId}`,
-          { wabaId: selectedWabaId, components: formData.components },
-          { headers: { Authorization: `Bearer ${authToken}` } },
-        );
-        // setFormSuccess("Template updated successfully!");
-      } else {
-        await axios.post(
-          `${API_URL}/api/templates`,
-          { wabaId: selectedWabaId, ...formData },
-          { headers: { Authorization: `Bearer ${authToken}` } },
-        );
-        // setFormSuccess(
-        //   "Template created successfully! Waiting for Meta review."
-        // );
-      }
-      setTimeout(() => {
-        setView("list");
-        setEditTemplateId(null);
-        setFormError("");
-        // setFormSuccess("");
-      }, 2000);
-    } catch (err) {
-      setFormError(err.response?.data?.error || "Failed to save template.");
-    } finally {
-      setLoading(false);
+  const handleAddButton = () => {
+    if (buttons.length >= 3) return;
+    setButtons([...buttons, { type: "QUICK_REPLY", text: "" }]);
+  };
+
+  const handleRemoveButton = (idx) => {
+    setButtons(buttons.filter((_, i) => i !== idx));
+  };
+
+  const handleButtonChange = (idx, field, val) => {
+    const newButtons = [...buttons];
+    newButtons[idx][field] = val;
+    setButtons(newButtons);
+  };
+
+  const handleAddCard = () => {
+    if (carouselCards.length >= 10) return;
+    setCarouselCards([
+      ...carouselCards,
+      {
+        headerType: "IMAGE",
+        mediaFile: null,
+        previewUrl: null,
+        bodyText: "",
+        buttons: [],
+      },
+    ]);
+  };
+
+  const handleRemoveCard = (idx) => {
+    setCarouselCards(carouselCards.filter((_, i) => i !== idx));
+  };
+
+  const handleCardChange = (idx, field, val) => {
+    const newCards = [...carouselCards];
+    newCards[idx][field] = val;
+    setCarouselCards(newCards);
+  };
+
+  const handleCardFileChange = (idx, e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const newCards = [...carouselCards];
+      newCards[idx].mediaFile = file;
+      newCards[idx].previewUrl = URL.createObjectURL(file);
+      setCarouselCards(newCards);
     }
   };
 
-  // --- DETAILS VIEW MOCK CHART ---
-  const renderAnalytics = () => {
-    // If no data yet, show loading or empty state
-    // Use data strictly from API response
-    const graphData = analyticsData?.data || [];
+  const handleAddCardButton = (cardIdx) => {
+    const newCards = [...carouselCards];
+    if (newCards[cardIdx].buttons.length >= 2) return;
+    newCards[cardIdx].buttons.push({ type: "QUICK_REPLY", text: "" });
+    setCarouselCards(newCards);
+  };
 
-    // Fallback if API hasn't returned yet, use selectedTemplate stats as baseline
-    // But prefer real graph totals if available.
-    // Ensure displaySent comes from graphData to match detailed view
-    const displaySent =
-      graphData.reduce((acc, curr) => acc + (curr.sent || 0), 0) ||
-      (selectedTemplate?.messages_delivered || 0);
-    const displayDelivered =
-      graphData.reduce((acc, curr) => acc + (curr.delivered || 0), 0) ||
-      (selectedTemplate?.messages_delivered || 0);
-    const totalRead = graphData.reduce(
-      (acc, curr) => acc + (curr.read || 0),
-      0,
+  const handleRemoveCardButton = (cardIdx, btnIdx) => {
+    const newCards = [...carouselCards];
+    newCards[cardIdx].buttons = newCards[cardIdx].buttons.filter(
+      (_, i) => i !== btnIdx
     );
+    setCarouselCards(newCards);
+  };
 
-    // Read rate calculation
-    const readRate =
-      displaySent > 0 ? Math.round((totalRead / displaySent) * 100) : 0;
+  const handleCardButtonChange = (cardIdx, btnIdx, field, val) => {
+    const newCards = [...carouselCards];
+    newCards[cardIdx].buttons[btnIdx][field] = val;
+    setCarouselCards(newCards);
+  };
 
-    // Currency formatting - Display empty if no data from API
-    // Per user "if no sharing data leve it"
-    const amountSpent = "--";
-    const costPerDelivered = "--";
+  const handleFileChange = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      setHeaderMediaFile(file);
+      setHeaderPreviewUrl(URL.createObjectURL(file));
+    }
+  };
+
+  const uploadMediaToBackend = async (file) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("wabaId", selectedWaba);
+
+    const res = await axios.post(
+      `${API_URL}/api/templates/upload-media`,
+      formData,
+      {
+        headers: {
+          "x-auth-token": token,
+          "Content-Type": "multipart/form-data",
+        },
+      }
+    );
+    return res.data;
+  };
+
+  const handleCreateTemplate = async (e) => {
+    e.preventDefault();
+    setSubmitting(true);
+
+    try {
+      const components = [];
+
+      if (isCarousel) {
+        if (!bodyText) {
+          alert("Carousel templates require a main message body text.");
+          setSubmitting(false);
+          return;
+        }
+        const bodyComponent = { type: "BODY", text: bodyText };
+        const matches = bodyText.match(/\{\{\d+\}\}/g) || [];
+        if (matches.length > 0) {
+          const uniqueVars = [...new Set(matches)].sort();
+          const exampleValues = uniqueVars.map(
+            (v) => sampleValues[v] || "sample"
+          );
+          bodyComponent.example = { body_text: [exampleValues] };
+        }
+        components.push(bodyComponent);
+
+        if (carouselCards.length === 0) {
+          alert("Please add at least one card to the carousel.");
+          setSubmitting(false);
+          return;
+        }
+
+        setUploadingMedia(true);
+        const processedCards = [];
+        for (let i = 0; i < carouselCards.length; i++) {
+          const card = carouselCards[i];
+          const cardComponents = [];
+
+          let handle = null;
+          let publicUrl = null;
+
+          if (card.mediaFile) {
+            try {
+              const uploadData = await uploadMediaToBackend(card.mediaFile);
+              handle = uploadData.handle;
+              publicUrl = uploadData.url;
+            } catch (err) {
+              alert(`Media Upload Failed for Card ${i + 1}. Please try again.`);
+              setUploadingMedia(false);
+              setSubmitting(false);
+              return;
+            }
+          } else {
+            alert(`Please select an image/video for Card ${i + 1}.`);
+            setUploadingMedia(false);
+            setSubmitting(false);
+            return;
+          }
+
+          cardComponents.push({
+            type: "HEADER",
+            format: card.headerType || "IMAGE",
+            example: { header_handle: [handle] },
+          });
+
+          if (publicUrl) {
+            cardComponents[cardComponents.length - 1]._publicUrl = publicUrl;
+          }
+
+          if (!card.bodyText) {
+            alert(`Card ${i + 1} requires body text.`);
+            setUploadingMedia(false);
+            setSubmitting(false);
+            return;
+          }
+          cardComponents.push({
+            type: "BODY",
+            text: card.bodyText,
+          });
+
+          if (card.buttons && card.buttons.length > 0) {
+            const formattedButtons = card.buttons.map((b) => {
+              if (b.type === "URL")
+                return { type: "URL", text: b.text, url: b.url };
+              if (b.type === "PHONE_NUMBER")
+                return {
+                  type: "PHONE_NUMBER",
+                  text: b.text,
+                  phone_number: b.phone_number,
+                };
+              return { type: "QUICK_REPLY", text: b.text };
+            });
+            cardComponents.push({ type: "BUTTONS", buttons: formattedButtons });
+          }
+
+          processedCards.push({ components: cardComponents });
+        }
+        setUploadingMedia(false);
+
+        components.push({
+          type: "CAROUSEL",
+          cards: processedCards,
+        });
+      } else {
+        if (headerType !== "NONE") {
+          if (headerType === "TEXT") {
+            components.push({
+              type: "HEADER",
+              format: "TEXT",
+              text: headerText,
+            });
+          } else {
+            let handle = null;
+            let publicUrl = null;
+            if (headerMediaFile) {
+              setUploadingMedia(true);
+              try {
+                const uploadData = await uploadMediaToBackend(headerMediaFile);
+                handle = uploadData.handle;
+                publicUrl = uploadData.url;
+                setUploadingMedia(false);
+              } catch (uploadErr) {
+                alert("Media Upload Failed. Please try again.");
+                setUploadingMedia(false);
+                setSubmitting(false);
+                return;
+              }
+            } else {
+              alert(
+                `Please select a ${headerType.toLowerCase()} file for the header.`
+              );
+              setSubmitting(false);
+              return;
+            }
+
+            components.push({
+              type: "HEADER",
+              format: headerType,
+              example: {
+                header_handle: [handle],
+              },
+              _publicUrl: publicUrl,
+            });
+          }
+        }
+
+        const bodyComponent = {
+          type: "BODY",
+          text: bodyText,
+        };
+
+        const matches = bodyText.match(/\{\{\d+\}\}/g) || [];
+        if (matches.length > 0) {
+          const uniqueVars = [...new Set(matches)].sort();
+          const exampleValues = uniqueVars.map(
+            (v) => sampleValues[v] || "sample"
+          );
+          bodyComponent.example = {
+            body_text: [exampleValues],
+          };
+        }
+        components.push(bodyComponent);
+
+        if (footerText) {
+          components.push({
+            type: "FOOTER",
+            text: footerText,
+          });
+        }
+
+        if (buttons.length > 0) {
+          const formattedButtons = buttons.map((b) => {
+            if (b.type === "URL")
+              return { type: "URL", text: b.text, url: b.url };
+            if (b.type === "PHONE_NUMBER")
+              return {
+                type: "PHONE_NUMBER",
+                text: b.text,
+                phone_number: b.phone_number,
+              };
+            return { type: "QUICK_REPLY", text: b.text };
+          });
+          components.push({
+            type: "BUTTONS",
+            buttons: formattedButtons,
+          });
+        }
+      }
+
+      const payload = {
+        wabaId: selectedWaba,
+        name: name.toLowerCase().replace(/[^a-z0-9_]/g, "_"),
+        category,
+        language,
+        components,
+      };
+
+      await axios.post(`${API_URL}/api/templates`, payload, {
+        headers: { "x-auth-token": token },
+      });
+
+      alert(
+        isEditing
+          ? "New template version submitted successfully!"
+          : "Template submitted successfully!"
+      );
+      setView("list");
+      resetForm();
+      fetchTemplates();
+    } catch (err) {
+      console.error("Create template error:", err);
+      const msg =
+        err.response?.data?.error?.error?.message ||
+        err.response?.data?.error?.message ||
+        "Failed to create template";
+      alert(`Error: ${msg}`);
+    } finally {
+      setSubmitting(false);
+      setUploadingMedia(false);
+    }
+  };
+
+  const handleDeleteTemplate = async (templateName, e) => {
+    if (e) e.stopPropagation();
+    if (!window.confirm(`Are you sure you want to delete "${templateName}"?`))
+      return;
+
+    try {
+      await axios.delete(
+        `${API_URL}/api/templates/${selectedWaba}/${templateName}`,
+        {
+          headers: { "x-auth-token": token },
+        }
+      );
+      fetchTemplates();
+      if (selectedTemplate?.name === templateName) {
+        setView("list");
+        setSelectedTemplate(null);
+      }
+    } catch (err) {
+      alert("Failed to delete template");
+    }
+  };
+
+  // Filtered Templates
+  const filteredTemplates = templates.filter((t) => {
+    const matchesSearch = t.name
+      .toLowerCase()
+      .includes(searchQuery.toLowerCase());
+    const matchesCategory =
+      categoryFilter === "ALL" || t.category === categoryFilter;
+    const matchesLanguage =
+      languageFilter === "ALL" || t.language === languageFilter;
+    const matchesStatus = statusFilter === "ALL" || t.status === statusFilter;
+    return matchesSearch && matchesCategory && matchesLanguage && matchesStatus;
+  });
+
+  // Extract unique languages from loaded templates for filter dropdown
+  const availableLanguages = Array.from(
+    new Set(["en", "en_US", "ar", ...templates.map((t) => t.language).filter(Boolean)])
+  );
+
+  const renderStatusBadge = (status) => {
+    let classes = "bg-slate-100 text-slate-700 border-slate-200";
+    let dotColor = "bg-slate-400";
+    let text = status;
+
+    if (status === "APPROVED") {
+      classes = "bg-emerald-50 text-emerald-700 border-emerald-200";
+      dotColor = "bg-emerald-500";
+      text = "Active - Quality pending";
+    } else if (status === "REJECTED") {
+      classes = "bg-rose-50 text-rose-700 border-rose-200";
+      dotColor = "bg-rose-500";
+      text = "Rejected";
+    } else if (status === "PENDING") {
+      classes = "bg-amber-50 text-amber-700 border-amber-200";
+      dotColor = "bg-amber-500";
+      text = "In Review";
+    } else if (status === "PAUSED") {
+      classes = "bg-orange-50 text-orange-700 border-orange-200";
+      dotColor = "bg-orange-500";
+      text = "Paused";
+    }
 
     return (
-      <div className="bg-white p-6 rounded-lg shadow-sm border border-[#DADDE1] mt-6">
-        <div className="flex justify-between items-center mb-6">
-          <h3 className="font-bold text-gray-800 text-lg">
-            Performance{" "}
-            <InformationCircleIcon className="w-4 h-4 inline text-gray-400" />
-          </h3>
-        </div>
-
-        <div className="grid grid-cols-4 gap-4 mb-8">
-          <div className="p-4 border border-[#DADDE1] rounded-lg">
-            <div className="text-xs text-gray-500 mb-1 font-semibold uppercase">
-              Amount spent{" "}
-              <InformationCircleIcon className="w-3 h-3 inline ml-1" />
-            </div>
-            <div className="text-2xl font-bold text-gray-900">
-              {amountSpent}
-            </div>
-          </div>
-          <div className="p-4 border border-[#DADDE1] rounded-lg">
-            <div className="text-xs text-gray-500 mb-1 font-semibold uppercase">
-              Cost per message{" "}
-              <InformationCircleIcon className="w-3 h-3 inline ml-1" />
-            </div>
-            <div className="text-2xl font-bold text-gray-900">
-              {costPerDelivered}
-            </div>
-          </div>
-          <div className="p-4 border border-[#DADDE1] rounded-lg">
-            <div className="text-xs text-gray-500 mb-1 font-semibold uppercase">
-              Messages sent
-            </div>
-            <div className="text-2xl font-bold text-gray-900">
-              {displaySent}
-            </div>
-          </div>
-          <div className="p-4 border border-[#DADDE1] rounded-lg">
-            <div className="text-xs text-gray-500 mb-1 font-semibold uppercase">
-              Messages delivered
-            </div>
-            <div className="text-2xl font-bold text-gray-900">
-              {displayDelivered}
-            </div>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-4 gap-4 mb-8">
-          <div className="p-4 border border-[#DADDE1] rounded-lg">
-            <div className="text-xs text-gray-500 mb-1 font-semibold uppercase">
-              Messages read
-            </div>
-            <div className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-              {totalRead}
-              <span className="text-sm font-normal text-gray-500">
-                ({readRate}%)
-              </span>
-            </div>
-          </div>
-          <div className="p-4 border border-[#DADDE1] rounded-lg">
-            <div className="text-xs text-gray-500 mb-1 font-semibold uppercase">
-              Unique replies
-            </div>
-            <div className="text-2xl font-bold text-gray-900">--</div>
-          </div>
-        </div>
-
-        <div className="h-[300px] w-full">
-          <ResponsiveContainer width="100%" height="100%" minWidth={0}>
-            <LineChart
-              data={graphData}
-              margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" vertical={false} />
-              <XAxis
-                dataKey="name"
-                axisLine={false}
-                tickLine={false}
-                tick={{ fill: "#65676B", fontSize: 12 }}
-                dy={10}
-              />
-              <YAxis
-                axisLine={false}
-                tickLine={false}
-                tick={{ fill: "#65676B", fontSize: 12 }}
-              />
-              <Tooltip />
-              <Legend iconType="plainline" />
-              <Line
-                type="monotone"
-                dataKey="sent"
-                stroke="#E05B5B"
-                strokeWidth={2}
-                dot={false}
-                activeDot={{ r: 6 }}
-                name="Messages sent"
-              />
-              <Line
-                type="monotone"
-                dataKey="delivered"
-                stroke="#5B3878"
-                strokeWidth={2}
-                dot={false}
-                name="Messages delivered"
-              />
-              <Line
-                type="monotone"
-                dataKey="read"
-                stroke="#008080"
-                strokeWidth={2}
-                dot={false}
-                name="Messages read"
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
+      <span
+        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${classes}`}
+      >
+        <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`}></span>
+        {text}
+      </span>
     );
   };
 
+  const renderCategoryPill = (cat) => {
+    const styles = {
+      MARKETING: "bg-indigo-50 text-indigo-700 border-indigo-100",
+      UTILITY: "bg-sky-50 text-sky-700 border-sky-100",
+      AUTHENTICATION: "bg-purple-50 text-purple-700 border-purple-100",
+    };
+    return (
+      <span
+        className={`inline-flex items-center px-2.5 py-0.5 rounded-md text-xs font-semibold border ${
+          styles[cat] || "bg-slate-50 text-slate-600 border-slate-200"
+        }`}
+      >
+        {cat}
+      </span>
+    );
+  };
+
+  // Summary metrics for the whole WABA table
+  const totalTemplatesCount = filteredTemplates.length;
+  const totalSentAll = filteredTemplates.reduce(
+    (acc, t) => acc + (t.messages_sent || 0),
+    0
+  );
+  const totalDeliveredAll = filteredTemplates.reduce(
+    (acc, t) => acc + (t.messages_delivered || 0),
+    0
+  );
+  const totalReadAll = filteredTemplates.reduce(
+    (acc, t) => acc + (t.messages_read || 0),
+    0
+  );
+  const totalRepliesAll = filteredTemplates.reduce(
+    (acc, t) => acc + (t.unique_replies || 0),
+    0
+  );
+
+  // Metrics for selected template in details view
+  const detailSent =
+    analyticsSummary?.messages_sent ?? selectedTemplate?.messages_sent ?? 0;
+  const detailDelivered =
+    analyticsSummary?.messages_delivered ??
+    selectedTemplate?.messages_delivered ??
+    0;
+  const detailRead =
+    analyticsSummary?.messages_read ?? selectedTemplate?.messages_read ?? 0;
+  const detailReplies =
+    analyticsSummary?.unique_replies ?? selectedTemplate?.unique_replies ?? 0;
+  const detailFailed =
+    analyticsSummary?.messages_failed ?? selectedTemplate?.messages_failed ?? 0;
+  const detailSkipped =
+    analyticsSummary?.messages_skipped ??
+    selectedTemplate?.messages_skipped ??
+    0;
+  const detailReadRate =
+    analyticsSummary?.read_rate ??
+    selectedTemplate?.read_rate ??
+    (detailDelivered > 0 ? Math.round((detailRead / detailDelivered) * 100) : 0);
+  const detailDeliveryRate =
+    analyticsSummary?.delivery_rate ??
+    selectedTemplate?.delivery_rate ??
+    (detailSent > 0 ? Math.round((detailDelivered / detailSent) * 100) : 0);
+  const detailReplyRate =
+    detailDelivered > 0
+      ? Math.min(100, Math.round((detailReplies / detailDelivered) * 100))
+      : 0;
+  const detailAmountSpent =
+    analyticsSummary?.amount_spent ?? selectedTemplate?.amount_spent ?? 0;
+  const detailCostPerMsg =
+    analyticsSummary?.cost_per_message ??
+    selectedTemplate?.cost_per_message ??
+    0;
+  const detailHeaderImage =
+    analyticsSummary?.headerImageUrl ||
+    selectedTemplate?.headerImageUrl ||
+    null;
+
   return (
-    <div className="min-h-screen bg-[#F0F2F5] text-[#1C2B33] font-sans flex text-sm justify-center">
-      {/* --- MAIN CONTENTWRAPPER --- */}
-      <div className="w-full max-w-[1400px] flex flex-col min-w-0 mx-auto px-4">
-        {view === "details" && selectedTemplate ? (
-          /* --- DETAILS VIEW --- */
-          <div className="p-6">
-            {/* Breadcrumb / Header */}
-            <div className="flex items-center gap-2 text-gray-500 mb-4 text-xs">
-              <span
-                className="cursor-pointer hover:underline"
-                onClick={() => setView("list")}
+    <div className="min-h-screen bg-slate-50/80 p-4 md:p-6 font-sans text-slate-800">
+      {/* LIST VIEW */}
+      {view === "list" && (
+        <div className="max-w-7xl mx-auto space-y-5">
+          {/* Page Header */}
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div>
+              <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
+                Message Templates
+              </h1>
+              <p className="text-sm text-slate-500 mt-0.5">
+                Create, manage, and track performance of your WhatsApp Cloud API templates
+              </p>
+            </div>
+            <div className="flex items-center gap-2.5">
+              <button
+                onClick={fetchTemplates}
+                disabled={loading}
+                className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 shadow-sm transition-all disabled:opacity-50"
               >
-                Manage templates
-              </span>
-              <ChevronRightIcon className="w-3 h-3" />
-              <span className="font-semibold text-gray-700">
-                Template insights
-              </span>
+                <ArrowPathIcon
+                  className={`w-4 h-4 text-slate-500 ${
+                    loading ? "animate-spin" : ""
+                  }`}
+                />
+                Refresh
+              </button>
+              <button
+                onClick={() => {
+                  resetForm();
+                  setView("create");
+                }}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 shadow-sm transition-all"
+              >
+                <PlusIcon className="w-4 h-4 stroke-[2.5]" />
+                Create template
+              </button>
             </div>
+          </div>
 
-            {/* Title Header */}
-            <div className="flex justify-between items-start mb-6">
-              <div className="flex items-start gap-4">
-                <div className="w-10 h-10 bg-[#008069] rounded flex items-center justify-center text-white">
-                  <ChatBubbleLeftRightIcon className="w-6 h-6" />
-                </div>
-                <div>
-                  <h1 className="text-2xl font-bold text-gray-900">
-                    {selectedTemplate.name}
-                  </h1>
-                  <div className="flex items-center gap-2 text-xs text-gray-500 mt-1">
-                    <span
-                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border ${
-                        selectedTemplate.status === "APPROVED"
-                          ? "bg-[#E7F6D5] text-[#1F510F] border-[#E7F6D5]"
-                          : selectedTemplate.status === "REJECTED"
-                          ? "bg-[#FFEBEB] text-[#C0121A] border-[#FFEBEB]"
-                          : "bg-gray-100 text-gray-600 border-gray-200"
-                      }`}
-                    >
-                      {selectedTemplate.status === "APPROVED"
-                        ? "Active - Quality pending"
-                        : selectedTemplate.status === "REJECTED"
-                        ? "Rejected"
-                        : selectedTemplate.status}
-                    </span>
-                    <span>•</span>
-                    <span>{selectedTemplate.category}</span>
-                    <span>•</span>
-                    <span>
-                      Updated {formatDate(selectedTemplate.last_updated_time)}
-                    </span>
-                  </div>
-                </div>
+          {/* Top Summary Strip */}
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            <div className="bg-white rounded-xl border border-slate-200/80 p-4 shadow-sm">
+              <div className="text-xs font-medium text-slate-500 uppercase tracking-wider">
+                Templates
               </div>
+              <div className="text-2xl font-bold text-slate-900 mt-1">
+                {totalTemplatesCount}
+              </div>
+            </div>
+            <div className="bg-white rounded-xl border border-slate-200/80 p-4 shadow-sm">
+              <div className="text-xs font-medium text-slate-500 uppercase tracking-wider">
+                Messages Sent
+              </div>
+              <div className="text-2xl font-bold text-slate-900 mt-1">
+                {totalSentAll.toLocaleString()}
+              </div>
+            </div>
+            <div className="bg-white rounded-xl border border-slate-200/80 p-4 shadow-sm">
+              <div className="text-xs font-medium text-slate-500 uppercase tracking-wider">
+                Delivered
+              </div>
+              <div className="text-2xl font-bold text-indigo-600 mt-1">
+                {totalDeliveredAll.toLocaleString()}
+              </div>
+            </div>
+            <div className="bg-white rounded-xl border border-slate-200/80 p-4 shadow-sm">
+              <div className="text-xs font-medium text-slate-500 uppercase tracking-wider">
+                Messages Read
+              </div>
+              <div className="text-2xl font-bold text-emerald-600 mt-1">
+                {totalReadAll.toLocaleString()}
+              </div>
+            </div>
+            <div className="bg-white rounded-xl border border-slate-200/80 p-4 shadow-sm col-span-2 sm:col-span-1">
+              <div className="text-xs font-medium text-slate-500 uppercase tracking-wider">
+                Total Replies
+              </div>
+              <div className="text-2xl font-bold text-amber-600 mt-1">
+                {totalRepliesAll.toLocaleString()}
+              </div>
+            </div>
+          </div>
 
-              <div className="flex items-center gap-2">
-                <button className="btn btn-sm bg-white border border-[#DADDE1] text-gray-700 hover:bg-gray-50 font-medium normal-case gap-2">
-                  <CloudIcon className="w-4 h-4" /> Cloud API{" "}
-                  <ChevronDownIcon className="w-3 h-3" />
-                </button>
-                <div className="flex items-center bg-white border border-[#DADDE1] rounded h-8 px-3 text-sm text-gray-600 gap-2">
-                  <ClockIcon className="w-4 h-4" />
-                  <span>Auto-detected: Dec 30, 2025 - Jan 7, 2026</span>
-                  <ChevronDownIcon className="w-3 h-3" />
-                </div>
-                <button
-                  className="btn btn-sm bg-[#E4E6EB] hover:bg-[#D8DADF] border border-[#DADDE1] text-gray-900 font-medium normal-case gap-2"
-                  onClick={() => handleEdit(selectedTemplate)}
+          {/* Filter & Action Toolbar */}
+          <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200/80 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              {/* Left side: WABA + Search */}
+              <div className="flex flex-wrap items-center gap-2.5 flex-1 min-w-[260px]">
+                {/* WABA Selector */}
+                <select
+                  className="h-10 px-3 py-2 text-sm font-medium text-slate-700 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all"
+                  value={selectedWaba}
+                  onChange={(e) => setSelectedWaba(e.target.value)}
                 >
-                  <PencilSquareIcon className="w-4 h-4" /> Edit template
-                </button>
-                <button className="btn btn-sm btn-square bg-white border border-[#DADDE1] text-gray-600">
-                  <EllipsisHorizontalIcon className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
+                  {wabas.map((w) => (
+                    <option key={w.wabaId} value={w.wabaId}>
+                      {w.businessName || w.wabaId}
+                    </option>
+                  ))}
+                </select>
 
-            {/* Status Banner — changes based on template status */}
-            {selectedTemplate.status === "REJECTED" ? (
-              <div className="bg-[#FFEBEB] border border-[#C0121A] rounded-md p-3 flex gap-3 text-sm text-[#C0121A] mb-6">
-                <ExclamationCircleIcon className="w-5 h-5 shrink-0 mt-0.5" />
-                <div>
-                  <div className="font-semibold">This template was rejected by Meta</div>
-                  {selectedTemplate.rejected_reason && (
-                    <div className="mt-1 text-[#7f0a11]">
-                      Reason: <span className="font-medium">{selectedTemplate.rejected_reason}</span>
-                    </div>
-                  )}
-                  <div className="mt-1 text-[#7f0a11] text-xs">
-                    Edit the template to fix the issue and resubmit for review.
-                  </div>
+                {/* Search Input */}
+                <div className="relative flex-1 min-w-[200px] max-w-md">
+                  <MagnifyingGlassIcon className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <input
+                    type="text"
+                    placeholder="Search templates by name..."
+                    className="w-full h-10 pl-9 pr-3 text-sm bg-slate-50 border border-slate-200 rounded-lg text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                  />
                 </div>
               </div>
-            ) : (
-              <div className="bg-[#FFF5E5] border border-[#F5C32E] rounded-md p-3 flex gap-3 text-sm text-gray-800 mb-6">
-                <ExclamationCircleIcon className="w-5 h-5 text-[#F5C32E] shrink-0" />
-                <div>
-                  <div className="font-semibold">
-                    This template was edited during the selected date range
-                  </div>
-                  <div>
-                    Insights show the total engagement for all versions of this
-                    message template in the date range you selected.
-                  </div>
-                </div>
-              </div>
-            )}
 
-            {/* Main Grid */}
-            <div className="flex flex-col lg:flex-row gap-6">
-              {/* Left: Preview */}
-              <div className="w-full lg:w-[320px] shrink-0">
-                <h3 className="font-bold text-gray-800 mb-3 ml-1">
-                  Your template
-                </h3>
-                <TemplatePreview template={selectedTemplate} />
-              </div>
+              {/* Right side: Filters + Date Range */}
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  className="h-10 px-3 text-sm text-slate-700 bg-white border border-slate-200 rounded-lg hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  value={categoryFilter}
+                  onChange={(e) => setCategoryFilter(e.target.value)}
+                >
+                  <option value="ALL">All Categories</option>
+                  <option value="MARKETING">Marketing</option>
+                  <option value="UTILITY">Utility</option>
+                  <option value="AUTHENTICATION">Authentication</option>
+                </select>
 
-              {/* Right: Insights */}
-              <div className="flex-1 min-w-0">
-                {/* Top Cards */}
-                {renderAnalytics()}
+                <select
+                  className="h-10 px-3 text-sm text-slate-700 bg-white border border-slate-200 rounded-lg hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  value={languageFilter}
+                  onChange={(e) => setLanguageFilter(e.target.value)}
+                >
+                  <option value="ALL">All Languages</option>
+                  {availableLanguages.map((lang) => (
+                    <option key={lang} value={lang}>
+                      {lang}
+                    </option>
+                  ))}
+                </select>
 
-                <div className="mt-4 text-xs text-gray-400 text-right">
-                  Analytics powered by Meta. This dashboard is governed by the
-                  Meta Hosting Terms for Cloud API.
+                <select
+                  className="h-10 px-3 text-sm text-slate-700 bg-white border border-slate-200 rounded-lg hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  value={statusFilter}
+                  onChange={(e) => setStatusFilter(e.target.value)}
+                >
+                  <option value="ALL">All Statuses</option>
+                  <option value="APPROVED">Approved</option>
+                  <option value="PENDING">Pending</option>
+                  <option value="REJECTED">Rejected</option>
+                </select>
+
+                <div className="relative flex items-center">
+                  <CalendarIcon className="w-4 h-4 text-slate-400 absolute left-3 pointer-events-none" />
+                  <select
+                    className="h-10 pl-9 pr-3 text-sm font-medium text-slate-700 bg-slate-50 border border-slate-200 rounded-lg hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    value={dateRange}
+                    onChange={(e) => setDateRange(e.target.value)}
+                  >
+                    <option value="all">All time</option>
+                    <option value="7">Last 7 days</option>
+                    <option value="30">Last 30 days</option>
+                    <option value="60">Last 60 days</option>
+                    <option value="90">Last 90 days</option>
+                  </select>
                 </div>
               </div>
             </div>
           </div>
-        ) : (
-          /* --- LIST / CREATE VIEW --- */
-          <div className="p-6 md:p-8 overflow-y-auto">
-            {/* TABS */}
-            {view === "list" && (
-              <div className="flex gap-1 mb-4">
-                <button
-                  className={`px-4 py-2 font-semibold rounded-md ${
-                    view === "list" && !editTemplateId
-                      ? "bg-[#EBF5FF] text-[#0064C8]"
-                      : "text-gray-600 hover:bg-gray-100"
-                  }`}
-                  onClick={() => setView("list")}
-                >
-                  Templates
-                </button>
-                <button className="px-4 py-2 font-semibold text-gray-600 hover:bg-gray-100 rounded-md">
-                  Template groups
-                </button>
-              </div>
-            )}
 
-            {view === "list" ? (
-              <div className="bg-white rounded-md shadow-sm border border-[#DADDE1]">
-                {/* FILTER BAR */}
-                <div className="p-3 flex flex-wrap gap-2 items-center border-b border-[#DADDE1] bg-white rounded-t-md relative z-20">
-                  {/* WABA ACCOUNT SWITCHER */}
-                  {wabaAccounts.length > 0 && (
-                    <div className="flex items-center gap-2 mr-2">
-                      <select
-                        className="select select-sm h-9 border-[#DADDE1] bg-[#F0F2F5] text-gray-800 font-medium rounded-sm text-sm focus:outline-none focus:border-blue-500 max-w-[220px]"
-                        value={selectedWabaId}
-                        onChange={(e) => {
-                          setSelectedWabaId(e.target.value);
-                          setTemplates([]);
-                        }}
-                      >
-                        {wabaAccounts.map((w) => (
-                          <option key={w.businessAccountId} value={w.businessAccountId}>
-                            {w.accountName || w.businessAccountId}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-                  <div className="relative">
-                    <MagnifyingGlassIcon className="w-4 h-4 absolute left-3 top-2.5 text-gray-400" />
-                    <input
-                      type="text"
-                      placeholder="Search"
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      className="input input-sm h-9 pl-9 w-64 border-[#DADDE1] focus:outline-none focus:border-blue-500 rounded-sm text-base"
-                    />
-                  </div>
+          {/* Data Table */}
+          <div className="bg-white rounded-xl shadow-sm border border-slate-200/80 overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-slate-50/80 border-b border-slate-200 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                    <th className="py-3.5 pl-5 pr-3">Template Name</th>
+                    <th className="py-3.5 px-3">Category</th>
+                    <th className="py-3.5 px-3">Language</th>
+                    <th className="py-3.5 px-3">Status</th>
+                    <th className="py-3.5 px-3 text-right">Sent</th>
+                    <th className="py-3.5 px-3 text-right">Delivered</th>
+                    <th className="py-3.5 px-3 text-right">Read Rate</th>
+                    <th className="py-3.5 px-3 text-right">Replies</th>
+                    <th className="py-3.5 px-3">Last Updated</th>
+                    <th className="py-3.5 pl-3 pr-5 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-sm">
+                  {loading ? (
+                    <tr>
+                      <td colSpan="10" className="text-center py-16 text-slate-400">
+                        <div className="flex flex-col items-center justify-center gap-2">
+                          <ArrowPathIcon className="w-6 h-6 animate-spin text-blue-600" />
+                          <span>Loading templates & analytics...</span>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : filteredTemplates.length === 0 ? (
+                    <tr>
+                      <td colSpan="10" className="text-center py-16 text-slate-400">
+                        No templates found matching your filters.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredTemplates.map((t) => {
+                      const bodyComp = t.components?.find(
+                        (c) => c.type === "BODY"
+                      );
+                      const bodyPreview = bodyComp?.text || "";
+                      const sentCount = t.messages_sent || 0;
+                      const delivCount = t.messages_delivered || 0;
+                      const readCount = t.messages_read || 0;
+                      const readRate = t.read_rate || 0;
+                      const repliesCount = t.unique_replies || 0;
 
-                  {/* CATEGORY DROPDOWN */}
-                  <div className="relative" ref={catRef}>
-                    <button
-                      className="btn btn-sm h-9 bg-white border-[#DADDE1] text-gray-600 hover:bg-gray-50 flex justify-between min-w-[120px] rounded-sm font-normal normal-case"
-                      onClick={() =>
-                        setShowCategoryDropdown(!showCategoryDropdown)
-                      }
-                    >
-                      Category <ChevronDownIcon className="w-4 h-4" />
-                    </button>
-                    {showCategoryDropdown && (
-                      <div className="absolute top-10 left-0 bg-white shadow-xl border border-gray-200 rounded-md w-48 p-2 z-50">
-                        {["MARKETING", "UTILITY", "AUTHENTICATION"].map(
-                          (cat) => (
-                            <label
-                              key={cat}
-                              className="flex items-center gap-2 px-2 py-2 hover:bg-gray-100 rounded cursor-pointer"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={selectedCategories.includes(cat)}
-                                onChange={() => toggleCategory(cat)}
-                                className="checkbox checkbox-xs rounded-sm border-gray-400 checked:bg-blue-600"
-                              />
-                              <span className="capitalize text-sm">
-                                {cat.toLowerCase()}
-                              </span>
-                            </label>
-                          ),
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* LANGUAGE DROPDOWN */}
-                  <div className="relative" ref={langRef}>
-                    <button
-                      className="btn btn-sm h-9 bg-white border-[#DADDE1] text-gray-600 hover:bg-gray-50 flex justify-between min-w-[120px] rounded-sm font-normal normal-case"
-                      onClick={() =>
-                        setShowLanguageDropdown(!showLanguageDropdown)
-                      }
-                    >
-                      Language <ChevronDownIcon className="w-4 h-4" />
-                    </button>
-                    {showLanguageDropdown && (
-                      <div className="absolute top-10 left-0 bg-white shadow-xl border border-gray-200 rounded-md w-48 p-2 z-50">
-                        {["en_US", "ar"].map((lang) => (
-                          <label
-                            key={lang}
-                            className="flex items-center gap-2 px-2 py-2 hover:bg-gray-100 rounded cursor-pointer"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={selectedLanguages.includes(lang)}
-                              onChange={() => toggleLanguage(lang)}
-                              className="checkbox checkbox-xs rounded-sm border-gray-400 checked:bg-blue-600"
-                            />
-                            <span className="text-sm">
-                              {lang === "en_US" ? "English (US)" : "Arabic"}
+                      return (
+                        <tr
+                          key={t.id}
+                          className="hover:bg-blue-50/40 cursor-pointer group transition-colors"
+                          onClick={() => {
+                            setSelectedTemplate(t);
+                            setView("details");
+                          }}
+                        >
+                          <td className="py-3.5 pl-5 pr-3 max-w-xs">
+                            <div className="font-semibold text-blue-600 group-hover:text-blue-700 group-hover:underline truncate">
+                              {t.name}
+                            </div>
+                            <div className="text-xs text-slate-400 truncate mt-0.5 flex items-center gap-1.5">
+                              <ChatBubbleLeftRightIcon className="w-3.5 h-3.5 shrink-0 text-slate-400" />
+                              <span className="truncate">{bodyPreview}</span>
+                            </div>
+                          </td>
+                          <td className="py-3.5 px-3 whitespace-nowrap">
+                            {renderCategoryPill(t.category)}
+                          </td>
+                          <td className="py-3.5 px-3 text-slate-600 font-medium whitespace-nowrap">
+                            {t.language}
+                          </td>
+                          <td className="py-3.5 px-3 whitespace-nowrap">
+                            {renderStatusBadge(t.status)}
+                          </td>
+                          <td className="py-3.5 px-3 text-right font-semibold text-slate-800 whitespace-nowrap">
+                            {sentCount.toLocaleString()}
+                          </td>
+                          <td className="py-3.5 px-3 text-right whitespace-nowrap">
+                            <span className="font-semibold text-slate-800">
+                              {delivCount.toLocaleString()}
                             </span>
-                          </label>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* STATUS DROPDOWN */}
-                  <div className="relative" ref={statusRef}>
-                    <button
-                      className="btn btn-sm h-9 bg-white border-[#DADDE1] text-gray-600 hover:bg-gray-50 flex justify-between min-w-[140px] rounded-sm font-normal normal-case"
-                      onClick={() => setShowStatusDropdown(!showStatusDropdown)}
-                    >
-                      {selectedStatuses.length > 0
-                        ? `${selectedStatuses.length} options sel...`
-                        : "Filter by..."}{" "}
-                      <ChevronDownIcon className="w-4 h-4" />
-                    </button>
-                    {showStatusDropdown && (
-                      <div className="absolute top-10 left-0 bg-white shadow-xl border border-gray-200 rounded-md w-64 p-2 z-50">
-                        <label className="flex items-center gap-2 px-2 py-2 hover:bg-gray-100 rounded cursor-pointer border-b border-gray-100 mb-1">
-                          <input
-                            type="checkbox"
-                            checked={false}
-                            onChange={selectAllStatuses}
-                            className="checkbox checkbox-xs rounded-sm border-gray-400 checked:bg-blue-600"
-                          />
-                          <span className="text-sm font-semibold">
-                            Select all
-                          </span>
-                        </label>
-                        <div className="max-h-60 overflow-y-auto">
-                          {["APPROVED", "REJECTED", "PENDING", "PAUSED"].map(
-                            (status) => (
-                              <label
-                                key={status}
-                                className="flex items-center gap-2 px-2 py-2 hover:bg-gray-100 rounded cursor-pointer"
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={selectedStatuses.includes(status)}
-                                  onChange={() => toggleStatus(status)}
-                                  className="checkbox checkbox-xs rounded-sm border-gray-400 checked:bg-blue-600"
-                                />
-                                <span className="text-sm capitalize">
-                                  {status === "APPROVED"
-                                    ? "Active"
-                                    : status.toLowerCase()}
-                                </span>
-                              </label>
-                            ),
-                          )}
-                        </div>
-                        <div className="pt-2 border-t border-gray-100 mt-1 flex justify-end">
-                          <button
-                            className="btn btn-xs btn-primary bg-[#0866FF] border-none"
-                            onClick={() => setShowStatusDropdown(false)}
-                          >
-                            Apply
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* DATE DROPDOWN */}
-                  <div className="relative ml-auto" ref={dateRef}>
-                    <div
-                      className="flex items-center border border-[#DADDE1] rounded-sm h-9 px-3 bg-white text-gray-700 cursor-pointer hover:bg-gray-50"
-                      onClick={() => setShowDateDropdown(!showDateDropdown)}
-                    >
-                      Last {dateRange} days{" "}
-                      <ChevronDownIcon className="w-4 h-4 ml-2" />
-                    </div>
-                    {showDateDropdown && (
-                      <div className="absolute top-10 right-0 bg-white shadow-xl border border-gray-200 rounded-md w-40 p-2 z-50">
-                        {[7, 30, 60, 90].map((days) => (
-                          <label
-                            key={days}
-                            className="flex items-center gap-2 px-2 py-2 hover:bg-gray-100 rounded cursor-pointer"
-                          >
-                            <input
-                              type="radio"
-                              name="date"
-                              checked={dateRange === days}
-                              onChange={() => setDateRange(days)}
-                              className="radio radio-xs checked:bg-blue-600"
-                            />
-                            <span className="text-sm">Last {days} days</span>
-                          </label>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  <button className="btn btn-sm h-9 bg-[#F0F2F5] hover:bg-[#E4E6EB] border border-[#DADDE1] text-gray-700 font-medium normal-case gap-2 rounded-sm shadow-none">
-                    <Cog6ToothIcon className="w-4 h-4" /> Namespace
-                  </button>
-
-                  <button className="btn btn-sm h-9 bg-white hover:bg-gray-50 border border-[#DADDE1] text-gray-700 font-medium normal-case rounded-sm shadow-none">
-                    Compare
-                  </button>
-
-                  <button
-                    className="btn btn-sm h-9 bg-[#0866FF] hover:bg-[#0052cc] border-none text-white font-medium normal-case rounded-md shadow-none px-4"
-                    onClick={() => {
-                      setEditTemplateId(null);
-                      setView("create");
-                    }}
-                  >
-                    Create template
-                  </button>
-                </div>
-
-                {/* TABLE */}
-                <div className="overflow-x-auto min-h-[400px]">
-                  <table className="table w-full text-sm">
-                    <thead className="bg-white text-gray-500 font-medium border-b border-[#DADDE1]">
-                      <tr>
-                        <th className="w-10 py-3">
-                          <input
-                            type="checkbox"
-                            className="checkbox checkbox-xs rounded-sm border-gray-400"
-                          />
-                        </th>
-                        <th className="font-semibold text-xs text-gray-500 uppercase py-3 cursor-pointer hover:bg-gray-50">
-                          Template name{" "}
-                          <span className="inline-block ml-1">↓</span>
-                        </th>
-                        <th className="font-semibold text-xs text-gray-500 uppercase py-3 cursor-pointer hover:bg-gray-50">
-                          Category <span className="inline-block ml-1">↑↓</span>
-                        </th>
-                        <th className="font-semibold text-xs text-gray-500 uppercase py-3 cursor-pointer hover:bg-gray-50">
-                          Language <span className="inline-block ml-1">↑↓</span>
-                        </th>
-                        <th className="font-semibold text-xs text-gray-500 uppercase py-3 cursor-pointer hover:bg-gray-50">
-                          Status <span className="inline-block ml-1">↑↓</span>
-                        </th>
-                        <th className="font-semibold text-xs text-gray-500 uppercase py-3 text-center">
-                          Messages
-                          <br />
-                          delivered
-                        </th>
-                        <th className="font-semibold text-xs text-gray-500 uppercase py-3 text-center">
-                          Read rate
-                        </th>
-                        <th className="font-semibold text-xs text-gray-500 uppercase py-3 text-center">
-                          Top block
-                          <br />
-                          reason
-                        </th>
-                        <th className="font-semibold text-xs text-gray-500 uppercase py-3 text-right">
-                          Last edited{" "}
-                          <span className="inline-block ml-1">↓</span>
-                        </th>
-                        <th className="w-10"></th>
-                      </tr>
-                    </thead>
-                    <tbody className="text-gray-900">
-                      {loading ? (
-                        <tr>
-                          <td
-                            colSpan="10"
-                            className="text-center py-20 text-gray-500"
-                          >
-                            Loading templates...
+                            {sentCount > 0 && (
+                              <span className="text-xs text-slate-400 ml-1">
+                                ({t.delivery_rate || Math.round((delivCount / sentCount) * 100)}%)
+                              </span>
+                            )}
                           </td>
-                        </tr>
-                      ) : templates.length === 0 ? (
-                        <tr>
-                          <td
-                            colSpan="10"
-                            className="text-center py-20 text-gray-400"
-                          >
-                            No templates found matching filters.
-                          </td>
-                        </tr>
-                      ) : (
-                        templates.map((t) => (
-                          <tr
-                            key={t.id}
-                            className="hover:bg-gray-50 border-b border-[#F0F2F5] last:border-0 group"
-                          >
-                            <td className="py-4">
-                              <input
-                                type="checkbox"
-                                className="checkbox checkbox-xs rounded-sm border-gray-400"
-                              />
-                            </td>
-                            <td
-                              className="max-w-[280px] py-4 cursor-pointer"
-                              onClick={() => {
-                                setSelectedTemplate(t);
-                                setView("details");
-                              }}
-                            >
-                              <div className="font-bold text-[#0866FF] hover:underline mb-1 text-[15px]">
-                                {t.name}
-                              </div>
-                              <div className="flex items-start gap-1.5 text-gray-500 text-xs truncate">
-                                <ChatBubbleBottomCenterTextIcon className="w-3.5 h-3.5 mt-0.5 text-blue-500 shrink-0" />
-                                <span className="truncate">
-                                  {getBodySnippet(t.components)}
-                                </span>
-                              </div>
-                            </td>
-                            <td className="py-4 text-[15px]">{t.category}</td>
-                            <td className="py-4 text-[15px]">{t.language}</td>
-                            <td className="py-4">
-                              {/* META PILL BADGE */}
+                          <td className="py-3.5 px-3 text-right whitespace-nowrap">
+                            <div className="inline-flex items-center gap-2">
                               <span
-                                className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-semibold border ${
-                                  t.status === "APPROVED"
-                                    ? "bg-[#E7F6D5] text-[#1F510F] border-[#E7F6D5]"
-                                    : t.status === "REJECTED"
-                                      ? "bg-[#FFEBEB] text-[#C0121A] border-[#FFEBEB]"
-                                      : "bg-[#FEF5D5] text-[#7A6117] border-[#FEF5D5]"
+                                className={`font-semibold ${
+                                  readRate >= 50
+                                    ? "text-emerald-600"
+                                    : readRate > 0
+                                    ? "text-blue-600"
+                                    : "text-slate-500"
                                 }`}
                               >
-                                <div
-                                  className={`w-2 h-2 rounded-full ${
-                                    t.status === "APPROVED"
-                                      ? "bg-[#4B9C25]"
-                                      : t.status === "REJECTED"
-                                        ? "bg-[#C0121A]"
-                                        : "bg-[#F5C32E]"
-                                  }`}
-                                ></div>
-                                {t.status === "APPROVED"
-                                  ? "Active - Quality pending"
-                                  : t.status === "PENDING"
-                                    ? "In Review"
-                                    : t.status}
+                                {readRate}%
                               </span>
-                            </td>
-                            <td className="text-center py-4 text-[15px]">
-                              {t.messages_delivered || 0}
-                            </td>
-                            <td className="text-center py-4 text-[15px]">
-                              {t.read_rate || "0%"}
-                            </td>
-                            <td className="text-center py-4 text-[15px]">--</td>
-                            <td className="text-right py-4 text-gray-500 text-[14px]">
-                              {formatDate(t.last_updated_time)}
-                            </td>
-                            <td className="py-4">
+                              {readCount > 0 && (
+                                <span className="text-xs text-slate-400">
+                                  ({readCount.toLocaleString()})
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="py-3.5 px-3 text-right whitespace-nowrap">
+                            {repliesCount > 0 ? (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+                                {repliesCount.toLocaleString()}
+                              </span>
+                            ) : (
+                              <span className="text-slate-400">0</span>
+                            )}
+                          </td>
+                          <td className="py-3.5 px-3 text-slate-500 text-xs whitespace-nowrap">
+                            {t.last_updated_time
+                              ? new Date(t.last_updated_time).toLocaleDateString(
+                                  "en-US",
+                                  {
+                                    month: "short",
+                                    day: "numeric",
+                                    year: "numeric",
+                                  }
+                                )
+                              : "--"}
+                          </td>
+                          <td
+                            className="py-3.5 pl-3 pr-5 text-right whitespace-nowrap"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <div className="inline-flex items-center gap-1">
                               <button
-                                className="btn btn-xs btn-ghost opacity-0 group-hover:opacity-100"
-                                onClick={() => handleEdit(t)}
+                                onClick={() => handleEditTemplate(t)}
+                                className="p-1.5 rounded-lg text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                                title="Edit / New Version"
                               >
-                                <PencilSquareIcon className="w-4 h-4 text-gray-500 hover:text-blue-600" />
+                                <PencilSquareIcon className="w-4 h-4" />
                               </button>
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
+                              <button
+                                onClick={(e) => handleDeleteTemplate(t.name, e)}
+                                className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                                title="Delete Template"
+                              >
+                                <TrashIcon className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* DETAILS / INSIGHTS VIEW */}
+      {view === "details" && selectedTemplate && (
+        <div className="max-w-7xl mx-auto space-y-6">
+          {/* Back Navigation */}
+          <div>
+            <button
+              onClick={() => setView("list")}
+              className="inline-flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors"
+            >
+              <ArrowLeftIcon className="w-4 h-4" />
+              Back to templates
+            </button>
+          </div>
+
+          {/* Template Header Card */}
+          <div className="bg-white p-5 sm:p-6 rounded-xl shadow-sm border border-slate-200/80 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+            <div className="flex items-start sm:items-center gap-4">
+              <div className="w-12 h-12 rounded-xl bg-emerald-600 flex items-center justify-center text-white shadow-sm shrink-0">
+                <ChatBubbleLeftRightIcon className="w-6 h-6" />
+              </div>
+              <div>
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <h1 className="text-xl sm:text-2xl font-bold text-slate-900">
+                    {selectedTemplate.name}
+                  </h1>
+                  {renderStatusBadge(selectedTemplate.status)}
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 mt-1.5">
+                  {renderCategoryPill(selectedTemplate.category)}
+                  <span>•</span>
+                  <span className="font-medium text-slate-600">
+                    Language: {selectedTemplate.language}
+                  </span>
+                  <span>•</span>
+                  <span>
+                    Updated{" "}
+                    {selectedTemplate.last_updated_time
+                      ? new Date(
+                          selectedTemplate.last_updated_time
+                        ).toLocaleDateString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                          year: "numeric",
+                        })
+                      : "Recently"}
+                  </span>
+                  {analyticsSummary?.campaigns_count > 0 && (
+                    <>
+                      <span>•</span>
+                      <span className="text-blue-600 font-semibold">
+                        Used in {analyticsSummary.campaigns_count} campaign
+                        {analyticsSummary.campaigns_count > 1 ? "s" : ""}
+                      </span>
+                    </>
+                  )}
                 </div>
               </div>
-            ) : (
-              /* --- CREATE / EDIT FORM --- */
-              <div className="h-full">
-                <TemplateForm
-                  initialData={
-                    editTemplateId
-                      ? templates.find((t) => t.id === editTemplateId)
-                      : null
-                  }
-                  wabaId={selectedWabaId}
-                  authToken={authToken}
-                  onSubmit={handleFormSubmit}
-                  onCancel={() => {
-                    setView("list");
-                    setEditTemplateId(null);
-                  }}
-                  loading={loading}
-                  error={formError}
+            </div>
+
+            {/* Right Toolbar: Cloud API badge, Date Range selector, Refresh, Edit, Delete */}
+            <div className="flex flex-wrap items-center gap-2.5">
+              <div className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium text-slate-600 bg-slate-100 border border-slate-200">
+                <CloudIcon className="w-4 h-4 text-slate-500" />
+                Cloud API
+              </div>
+
+              <div className="relative flex items-center">
+                <CalendarIcon className="w-4 h-4 text-slate-500 absolute left-3 pointer-events-none" />
+                <select
+                  className="h-9 pl-9 pr-3 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm"
+                  value={dateRange}
+                  onChange={(e) => setDateRange(e.target.value)}
+                >
+                  <option value="all">All time</option>
+                  <option value="7">Last 7 days</option>
+                  <option value="30">Last 30 days</option>
+                  <option value="60">Last 60 days</option>
+                  <option value="90">Last 90 days</option>
+                </select>
+              </div>
+
+              <button
+                onClick={fetchTemplateAnalytics}
+                disabled={loadingAnalytics}
+                className="inline-flex items-center gap-1.5 h-9 px-3 rounded-lg text-xs font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 shadow-sm transition-all"
+                title="Refresh Insights"
+              >
+                <ArrowPathIcon
+                  className={`w-4 h-4 text-slate-500 ${
+                    loadingAnalytics ? "animate-spin" : ""
+                  }`}
                 />
+                Sync
+              </button>
+
+              <button
+                onClick={() => handleEditTemplate(selectedTemplate)}
+                className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-lg text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 shadow-sm transition-all"
+              >
+                <PencilSquareIcon className="w-4 h-4" />
+                Edit template
+              </button>
+
+              <button
+                onClick={(e) => handleDeleteTemplate(selectedTemplate.name, e)}
+                className="inline-flex items-center justify-center h-9 w-9 rounded-lg text-slate-500 bg-white border border-slate-200 hover:text-rose-600 hover:border-rose-200 hover:bg-rose-50 transition-all"
+                title="Delete Template"
+              >
+                <TrashIcon className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          {/* Info Banner */}
+          <div className="bg-blue-50/70 border border-blue-200/80 rounded-xl px-4 py-3 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <InformationCircleIcon className="w-5 h-5 text-blue-600 shrink-0" />
+              <p className="text-xs sm:text-sm text-slate-700">
+                Showing combined{" "}
+                <span className="font-semibold text-slate-900">
+                  Meta Graph API + Campaign Delivery & Reply Insights
+                </span>{" "}
+                for{" "}
+                <span className="font-semibold text-blue-700">
+                  {getDateRangeLabel(dateRange)}
+                </span>
+                .
+              </p>
+            </div>
+            {detailAmountSpent > 0 && (
+              <div className="text-xs font-semibold text-slate-700 bg-white px-3 py-1 rounded-lg border border-blue-100 whitespace-nowrap">
+                Meta Spend: ${detailAmountSpent.toFixed(2)} ($
+                {detailCostPerMsg.toFixed(3)}/msg)
               </div>
             )}
           </div>
-        )}
-      </div>
+
+          {/* Main Content: Left Phone Preview + Right Performance Dashboard */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+            {/* Left Column: Template Preview */}
+            <div className="lg:col-span-4 space-y-3">
+              <div className="bg-white rounded-xl border border-slate-200/80 p-4 shadow-sm">
+                <h3 className="font-bold text-slate-800 text-sm mb-3 flex items-center justify-between">
+                  <span>Template Preview</span>
+                  <span className="text-xs font-normal text-slate-400">
+                    WhatsApp Render
+                  </span>
+                </h3>
+                <TemplatePreview
+                  template={selectedTemplate}
+                  headerMediaUrl={detailHeaderImage}
+                />
+              </div>
+            </div>
+
+            {/* Right Column: Performance & Analytics */}
+            <div className="lg:col-span-8 space-y-6">
+              <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200/80">
+                <div className="flex items-center justify-between mb-5">
+                  <div>
+                    <h3 className="font-bold text-slate-900 text-lg">
+                      Performance Overview
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Real-time delivery, engagement, and customer response metrics
+                    </p>
+                  </div>
+                  <span className="text-xs font-medium text-slate-500 bg-slate-100 px-2.5 py-1 rounded-md">
+                    {getDateRangeLabel(dateRange)}
+                  </span>
+                </div>
+
+                {/* KPI Cards Grid */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-8">
+                  {/* Messages Sent */}
+                  <div className="p-4 rounded-xl border border-slate-200/80 bg-slate-50/50">
+                    <div className="flex items-center justify-between text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
+                      <span>Messages Sent</span>
+                      <PaperAirplaneIcon className="w-4 h-4 text-blue-500" />
+                    </div>
+                    <div className="text-2xl font-bold text-slate-900">
+                      {detailSent.toLocaleString()}
+                    </div>
+                    <div className="text-xs text-slate-500 mt-1">
+                      Total dispatched messages
+                    </div>
+                  </div>
+
+                  {/* Messages Delivered */}
+                  <div className="p-4 rounded-xl border border-slate-200/80 bg-slate-50/50">
+                    <div className="flex items-center justify-between text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
+                      <span>Delivered</span>
+                      <CheckCircleIcon className="w-4 h-4 text-indigo-500" />
+                    </div>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-2xl font-bold text-indigo-600">
+                        {detailDelivered.toLocaleString()}
+                      </span>
+                      <span className="text-xs font-semibold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">
+                        {detailDeliveryRate}%
+                      </span>
+                    </div>
+                    <div className="text-xs text-slate-500 mt-1">
+                      Reached recipient device
+                    </div>
+                  </div>
+
+                  {/* Messages Read */}
+                  <div className="p-4 rounded-xl border border-slate-200/80 bg-slate-50/50">
+                    <div className="flex items-center justify-between text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
+                      <span>Messages Read</span>
+                      <EyeIcon className="w-4 h-4 text-emerald-500" />
+                    </div>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-2xl font-bold text-emerald-600">
+                        {detailRead.toLocaleString()}
+                      </span>
+                      <span className="text-xs font-semibold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">
+                        {detailReadRate}%
+                      </span>
+                    </div>
+                    <div className="text-xs text-slate-500 mt-1">
+                      Opened by recipient
+                    </div>
+                  </div>
+
+                  {/* Unique Replies */}
+                  <div className="p-4 rounded-xl border border-slate-200/80 bg-slate-50/50">
+                    <div className="flex items-center justify-between text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
+                      <span>Unique Replies</span>
+                      <ChatBubbleBottomCenterTextIcon className="w-4 h-4 text-amber-500" />
+                    </div>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-2xl font-bold text-amber-600">
+                        {detailReplies.toLocaleString()}
+                      </span>
+                      {detailDelivered > 0 && (
+                        <span className="text-xs font-semibold text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded">
+                          {detailReplyRate}% CTR
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-slate-500 mt-1">
+                      Contacts who responded
+                    </div>
+                  </div>
+
+                  {/* Failed / Skipped */}
+                  <div className="p-4 rounded-xl border border-slate-200/80 bg-slate-50/50">
+                    <div className="flex items-center justify-between text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
+                      <span>Failed / Skipped</span>
+                      <ExclamationTriangleIcon className="w-4 h-4 text-rose-500" />
+                    </div>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-2xl font-bold text-rose-600">
+                        {detailFailed.toLocaleString()}
+                      </span>
+                      {detailSkipped > 0 && (
+                        <span className="text-xs text-slate-500">
+                          / {detailSkipped.toLocaleString()} skipped
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-slate-500 mt-1">
+                      Undelivered or excluded
+                    </div>
+                  </div>
+
+                  {/* Amount Spent / Campaigns */}
+                  <div className="p-4 rounded-xl border border-slate-200/80 bg-slate-50/50">
+                    <div className="flex items-center justify-between text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
+                      <span>
+                        {detailAmountSpent > 0 ? "Amount Spent" : "Campaigns Run"}
+                      </span>
+                      <SparklesIcon className="w-4 h-4 text-purple-500" />
+                    </div>
+                    <div className="text-2xl font-bold text-slate-900">
+                      {detailAmountSpent > 0
+                        ? `$${detailAmountSpent.toFixed(2)}`
+                        : analyticsSummary?.campaigns_count ?? 0}
+                    </div>
+                    <div className="text-xs text-slate-500 mt-1">
+                      {detailAmountSpent > 0
+                        ? `Avg $${detailCostPerMsg.toFixed(3)} per message`
+                        : "Broadcast campaigns using template"}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Delivery & Engagement Trend Chart */}
+                <div className="border-t border-slate-100 pt-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <h4 className="text-sm font-bold text-slate-800">
+                      Delivery & Engagement Timeline
+                    </h4>
+                  </div>
+
+                  <div className="h-80 w-full">
+                    {loadingAnalytics ? (
+                      <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-2">
+                        <ArrowPathIcon className="w-6 h-6 animate-spin text-blue-600" />
+                        <span className="text-sm">Loading performance chart...</span>
+                      </div>
+                    ) : analyticsData.length === 0 ? (
+                      <div className="h-full flex flex-col items-center justify-center text-slate-400 bg-slate-50/60 rounded-xl border border-dashed border-slate-200 p-6 text-center">
+                        <ChatBubbleLeftRightIcon className="w-8 h-8 text-slate-300 mb-2" />
+                        <p className="text-sm font-medium text-slate-600">
+                          No timeline activity recorded for this period
+                        </p>
+                        <p className="text-xs text-slate-400 mt-1">
+                          Try switching the date range filter to "All time" or send a campaign with this template.
+                        </p>
+                      </div>
+                    ) : (
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart
+                          data={analyticsData}
+                          margin={{ top: 10, right: 20, left: 0, bottom: 0 }}
+                        >
+                          <defs>
+                            <linearGradient
+                              id="colorSent"
+                              x1="0"
+                              y1="0"
+                              x2="0"
+                              y2="1"
+                            >
+                              <stop
+                                offset="5%"
+                                stopColor="#3b82f6"
+                                stopOpacity={0.2}
+                              />
+                              <stop
+                                offset="95%"
+                                stopColor="#3b82f6"
+                                stopOpacity={0}
+                              />
+                            </linearGradient>
+                            <linearGradient
+                              id="colorDelivered"
+                              x1="0"
+                              y1="0"
+                              x2="0"
+                              y2="1"
+                            >
+                              <stop
+                                offset="5%"
+                                stopColor="#6366f1"
+                                stopOpacity={0.25}
+                              />
+                              <stop
+                                offset="95%"
+                                stopColor="#6366f1"
+                                stopOpacity={0}
+                              />
+                            </linearGradient>
+                            <linearGradient
+                              id="colorRead"
+                              x1="0"
+                              y1="0"
+                              x2="0"
+                              y2="1"
+                            >
+                              <stop
+                                offset="5%"
+                                stopColor="#10b981"
+                                stopOpacity={0.25}
+                              />
+                              <stop
+                                offset="95%"
+                                stopColor="#10b981"
+                                stopOpacity={0}
+                              />
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid
+                            strokeDasharray="3 3"
+                            vertical={false}
+                            stroke="#e2e8f0"
+                          />
+                          <XAxis
+                            dataKey="date"
+                            tick={{ fontSize: 12, fill: "#64748b" }}
+                            axisLine={false}
+                            tickLine={false}
+                          />
+                          <YAxis
+                            tick={{ fontSize: 12, fill: "#64748b" }}
+                            axisLine={false}
+                            tickLine={false}
+                          />
+                          <Tooltip
+                            contentStyle={{
+                              backgroundColor: "#fff",
+                              borderRadius: "10px",
+                              border: "1px solid #e2e8f0",
+                              boxShadow: "0 8px 24px -4px rgba(0,0,0,0.08)",
+                              fontSize: "12px",
+                            }}
+                          />
+                          <Legend
+                            verticalAlign="bottom"
+                            height={36}
+                            iconType="circle"
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="sent"
+                            name="Messages sent"
+                            stroke="#3b82f6"
+                            fillOpacity={1}
+                            fill="url(#colorSent)"
+                            strokeWidth={2}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="delivered"
+                            name="Messages delivered"
+                            stroke="#6366f1"
+                            fillOpacity={1}
+                            fill="url(#colorDelivered)"
+                            strokeWidth={2}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="read"
+                            name="Messages read"
+                            stroke="#10b981"
+                            fillOpacity={1}
+                            fill="url(#colorRead)"
+                            strokeWidth={2}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="replied"
+                            name="Unique replies"
+                            stroke="#f59e0b"
+                            fillOpacity={0}
+                            strokeWidth={2}
+                          />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* CREATE / EDIT VIEW */}
+      {view === "create" && (
+        <div className="max-w-7xl mx-auto">
+          <div className="mb-4">
+            <button
+              onClick={() => setView("list")}
+              className="inline-flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors"
+            >
+              <ArrowLeftIcon className="w-4 h-4" />
+              Back to templates
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+            {/* Form Side */}
+            <div className="lg:col-span-7 bg-white p-6 rounded-xl shadow-sm border border-slate-200/80">
+              <div className="border-b border-slate-100 pb-4 mb-6">
+                <h2 className="text-xl font-bold text-slate-900">
+                  {isEditing
+                    ? `Create New Version from "${name}"`
+                    : "Create New Template"}
+                </h2>
+                <p className="text-xs text-slate-500 mt-1">
+                  Configure your message structure, variables, media header, and interactive buttons
+                </p>
+              </div>
+
+              {isEditing && (
+                <div className="bg-amber-50 border border-amber-200 p-3.5 rounded-xl mb-6 text-xs text-amber-800">
+                  <strong>Note:</strong> Meta does not allow direct editing of active templates. Submitting this form will create a new template (please adjust the name slightly if creating a variation).
+                </div>
+              )}
+
+              <form onSubmit={handleCreateTemplate} className="space-y-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                      Template Name
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. welcome_offer_2026"
+                      className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white font-mono"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                    />
+                    <span className="text-[11px] text-slate-400 mt-1 block">
+                      Lowercase letters, numbers, and underscores only
+                    </span>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                      Category
+                    </label>
+                    <select
+                      className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
+                      value={category}
+                      onChange={(e) => setCategory(e.target.value)}
+                    >
+                      <option value="MARKETING">Marketing</option>
+                      <option value="UTILITY">Utility</option>
+                      <option value="AUTHENTICATION">Authentication</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                      Language
+                    </label>
+                    <select
+                      className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
+                      value={language}
+                      onChange={(e) => setLanguage(e.target.value)}
+                    >
+                      <option value="en_US">English (US)</option>
+                      <option value="en">English</option>
+                      <option value="ar">Arabic</option>
+                      <option value="es">Spanish</option>
+                      <option value="fr">French</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                      Template Type
+                    </label>
+                    <div className="flex items-center gap-4 h-10">
+                      <label className="inline-flex items-center gap-2 cursor-pointer text-sm font-medium text-slate-700">
+                        <input
+                          type="radio"
+                          name="templateType"
+                          className="w-4 h-4 text-blue-600 focus:ring-blue-500"
+                          checked={!isCarousel}
+                          onChange={() => setIsCarousel(false)}
+                        />
+                        Standard
+                      </label>
+                      <label className="inline-flex items-center gap-2 cursor-pointer text-sm font-medium text-slate-700">
+                        <input
+                          type="radio"
+                          name="templateType"
+                          className="w-4 h-4 text-blue-600 focus:ring-blue-500"
+                          checked={isCarousel}
+                          onChange={() => {
+                            setIsCarousel(true);
+                            setCategory("MARKETING");
+                            if (carouselCards.length === 0) handleAddCard();
+                          }}
+                        />
+                        Carousel (Multi-Card)
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Standard Header Section */}
+                {!isCarousel && (
+                  <div className="border-t border-slate-100 pt-5">
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                      Header (Optional)
+                    </label>
+                    <select
+                      className="w-full sm:w-64 h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white mb-3"
+                      value={headerType}
+                      onChange={(e) => {
+                        setHeaderType(e.target.value);
+                        setHeaderMediaFile(null);
+                        setHeaderPreviewUrl(null);
+                      }}
+                    >
+                      <option value="NONE">None</option>
+                      <option value="TEXT">Text</option>
+                      <option value="IMAGE">Image</option>
+                      <option value="VIDEO">Video</option>
+                      <option value="DOCUMENT">Document</option>
+                    </select>
+
+                    {headerType === "TEXT" && (
+                      <input
+                        type="text"
+                        placeholder="Enter header text..."
+                        className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
+                        value={headerText}
+                        onChange={(e) => setHeaderText(e.target.value)}
+                        maxLength={60}
+                      />
+                    )}
+
+                    {["IMAGE", "VIDEO", "DOCUMENT"].includes(headerType) && (
+                      <div className="p-4 border-2 border-dashed border-slate-200 rounded-xl bg-slate-50/50 text-center">
+                        <input
+                          type="file"
+                          onChange={handleFileChange}
+                          accept={
+                            headerType === "IMAGE"
+                              ? "image/*"
+                              : headerType === "VIDEO"
+                              ? "video/*"
+                              : ".pdf"
+                          }
+                          className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer"
+                        />
+                        <p className="text-xs text-slate-400 mt-2">
+                          Upload a sample {headerType.toLowerCase()} for Meta approval & preview.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Body Text */}
+                <div className="border-t border-slate-100 pt-5">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                      Body Text
+                    </label>
+                    <span className="text-xs text-slate-400">
+                      {bodyText.length}/1024
+                    </span>
+                  </div>
+                  <textarea
+                    required
+                    rows={6}
+                    placeholder="Enter the main message body... Use {{1}}, {{2}} for dynamic variables."
+                    className="w-full p-3 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white leading-relaxed"
+                    value={bodyText}
+                    onChange={(e) => setBodyText(e.target.value)}
+                    maxLength={1024}
+                  />
+                </div>
+
+                {/* Variable Samples */}
+                {bodyText.match(/\{\{\d+\}\}/g) && (
+                  <div className="bg-amber-50/70 p-4 rounded-xl border border-amber-200 space-y-3">
+                    <h4 className="text-xs font-bold text-amber-900 uppercase tracking-wider">
+                      Sample Values for Variables (Required by Meta)
+                    </h4>
+                    {[...new Set(bodyText.match(/\{\{\d+\}\}/g))]
+                      .sort()
+                      .map((v) => (
+                        <div key={v} className="flex items-center gap-3">
+                          <span className="text-xs font-mono font-bold text-amber-800 w-12">
+                            {v}
+                          </span>
+                          <input
+                            type="text"
+                            required
+                            placeholder={`Sample value for ${v} (e.g. John)`}
+                            className="flex-1 h-9 px-3 text-sm bg-white border border-amber-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500"
+                            value={sampleValues[v] || ""}
+                            onChange={(e) =>
+                              setSampleValues({
+                                ...sampleValues,
+                                [v]: e.target.value,
+                              })
+                            }
+                          />
+                        </div>
+                      ))}
+                  </div>
+                )}
+
+                {/* Standard Footer & Buttons */}
+                {!isCarousel && (
+                  <>
+                    <div className="border-t border-slate-100 pt-5">
+                      <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                        Footer (Optional)
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Enter footer text..."
+                        className="w-full h-10 px-3 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
+                        value={footerText}
+                        onChange={(e) => setFooterText(e.target.value)}
+                        maxLength={60}
+                      />
+                    </div>
+
+                    <div className="border-t border-slate-100 pt-5">
+                      <div className="flex items-center justify-between mb-3">
+                        <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                          Interactive Buttons (Optional)
+                        </label>
+                        <button
+                          type="button"
+                          onClick={handleAddButton}
+                          disabled={buttons.length >= 3}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold text-blue-600 bg-blue-50 hover:bg-blue-100 disabled:opacity-40 transition-colors"
+                        >
+                          <PlusIcon className="w-3.5 h-3.5" /> Add Button
+                        </button>
+                      </div>
+
+                      <div className="space-y-3">
+                        {buttons.map((btn, idx) => (
+                          <div
+                            key={idx}
+                            className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 flex flex-col gap-3"
+                          >
+                            <div className="flex items-center gap-2">
+                              <select
+                                className="h-9 px-2.5 text-xs font-medium bg-white border border-slate-200 rounded-lg"
+                                value={btn.type}
+                                onChange={(e) =>
+                                  handleButtonChange(idx, "type", e.target.value)
+                                }
+                              >
+                                <option value="QUICK_REPLY">Quick Reply</option>
+                                <option value="URL">Visit Website (URL)</option>
+                                <option value="PHONE_NUMBER">
+                                  Call Phone Number
+                                </option>
+                              </select>
+                              <input
+                                type="text"
+                                placeholder="Button label text"
+                                required
+                                className="flex-1 h-9 px-3 text-sm bg-white border border-slate-200 rounded-lg"
+                                value={btn.text}
+                                onChange={(e) =>
+                                  handleButtonChange(idx, "text", e.target.value)
+                                }
+                                maxLength={25}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveButton(idx)}
+                                className="p-2 text-rose-500 hover:bg-rose-50 rounded-lg"
+                              >
+                                <TrashIcon className="w-4 h-4" />
+                              </button>
+                            </div>
+                            {btn.type === "URL" && (
+                              <input
+                                type="url"
+                                placeholder="https://example.com"
+                                required
+                                className="w-full h-9 px-3 text-sm bg-white border border-slate-200 rounded-lg"
+                                value={btn.url || ""}
+                                onChange={(e) =>
+                                  handleButtonChange(idx, "url", e.target.value)
+                                }
+                              />
+                            )}
+                            {btn.type === "PHONE_NUMBER" && (
+                              <input
+                                type="tel"
+                                placeholder="+971501234567"
+                                required
+                                className="w-full h-9 px-3 text-sm bg-white border border-slate-200 rounded-lg"
+                                value={btn.phone_number || ""}
+                                onChange={(e) =>
+                                  handleButtonChange(
+                                    idx,
+                                    "phone_number",
+                                    e.target.value
+                                  )
+                                }
+                              />
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {/* Carousel Cards Configuration */}
+                {isCarousel && (
+                  <div className="border-t border-slate-100 pt-5 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                        Carousel Cards ({carouselCards.length}/10)
+                      </label>
+                      <button
+                        type="button"
+                        onClick={handleAddCard}
+                        disabled={carouselCards.length >= 10}
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold text-blue-600 bg-blue-50 hover:bg-blue-100 disabled:opacity-40"
+                      >
+                        <PlusIcon className="w-3.5 h-3.5" /> Add Card
+                      </button>
+                    </div>
+
+                    <div className="space-y-4">
+                      {carouselCards.map((card, cIdx) => (
+                        <div
+                          key={cIdx}
+                          className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3"
+                        >
+                          <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+                            <h4 className="font-bold text-slate-700 text-sm">
+                              Card #{cIdx + 1}
+                            </h4>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveCard(cIdx)}
+                              className="text-rose-500 hover:bg-rose-50 p-1 rounded"
+                            >
+                              <TrashIcon className="w-4 h-4" />
+                            </button>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            <select
+                              className="h-9 px-2.5 text-xs bg-white border border-slate-200 rounded-lg"
+                              value={card.headerType}
+                              onChange={(e) =>
+                                handleCardChange(
+                                  cIdx,
+                                  "headerType",
+                                  e.target.value
+                                )
+                              }
+                            >
+                              <option value="IMAGE">Image</option>
+                              <option value="VIDEO">Video</option>
+                            </select>
+                            <input
+                              type="file"
+                              onChange={(e) => handleCardFileChange(cIdx, e)}
+                              accept={
+                                card.headerType === "IMAGE"
+                                  ? "image/*"
+                                  : "video/*"
+                              }
+                              className="sm:col-span-2 text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700"
+                            />
+                          </div>
+
+                          <textarea
+                            rows={2}
+                            required
+                            placeholder="Card description text..."
+                            className="w-full p-2.5 text-sm bg-white border border-slate-200 rounded-lg"
+                            value={card.bodyText}
+                            onChange={(e) =>
+                              handleCardChange(cIdx, "bodyText", e.target.value)
+                            }
+                            maxLength={160}
+                          />
+
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-semibold text-slate-500">
+                                Card Buttons ({card.buttons.length}/2)
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleAddCardButton(cIdx)}
+                                disabled={card.buttons.length >= 2}
+                                className="text-xs font-semibold text-blue-600 hover:underline disabled:opacity-40"
+                              >
+                                + Add Button
+                              </button>
+                            </div>
+                            {card.buttons.map((btn, bIdx) => (
+                              <div
+                                key={bIdx}
+                                className="p-2.5 bg-white rounded-lg border border-slate-200 space-y-2"
+                              >
+                                <div className="flex items-center gap-2">
+                                  <select
+                                    className="h-8 px-2 text-xs bg-slate-50 border border-slate-200 rounded"
+                                    value={btn.type}
+                                    onChange={(e) =>
+                                      handleCardButtonChange(
+                                        cIdx,
+                                        bIdx,
+                                        "type",
+                                        e.target.value
+                                      )
+                                    }
+                                  >
+                                    <option value="QUICK_REPLY">Reply</option>
+                                    <option value="URL">URL</option>
+                                    <option value="PHONE_NUMBER">Phone</option>
+                                  </select>
+                                  <input
+                                    type="text"
+                                    placeholder="Label"
+                                    required
+                                    className="flex-1 h-8 px-2.5 text-xs border border-slate-200 rounded"
+                                    value={btn.text}
+                                    onChange={(e) =>
+                                      handleCardButtonChange(
+                                        cIdx,
+                                        bIdx,
+                                        "text",
+                                        e.target.value
+                                      )
+                                    }
+                                    maxLength={25}
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      handleRemoveCardButton(cIdx, bIdx)
+                                    }
+                                    className="text-rose-500 p-1"
+                                  >
+                                    <TrashIcon className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                                {btn.type === "URL" && (
+                                  <input
+                                    type="url"
+                                    placeholder="https://example.com"
+                                    required
+                                    className="w-full h-8 px-2.5 text-xs border border-slate-200 rounded"
+                                    value={btn.url || ""}
+                                    onChange={(e) =>
+                                      handleCardButtonChange(
+                                        cIdx,
+                                        bIdx,
+                                        "url",
+                                        e.target.value
+                                      )
+                                    }
+                                  />
+                                )}
+                                {btn.type === "PHONE_NUMBER" && (
+                                  <input
+                                    type="tel"
+                                    placeholder="+971501234567"
+                                    required
+                                    className="w-full h-8 px-2.5 text-xs border border-slate-200 rounded"
+                                    value={btn.phone_number || ""}
+                                    onChange={(e) =>
+                                      handleCardButtonChange(
+                                        cIdx,
+                                        bIdx,
+                                        "phone_number",
+                                        e.target.value
+                                      )
+                                    }
+                                  />
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="pt-4 border-t border-slate-100">
+                  <button
+                    type="submit"
+                    disabled={submitting || uploadingMedia}
+                    className="w-full h-11 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm shadow-sm transition-all disabled:opacity-50"
+                  >
+                    {uploadingMedia
+                      ? "Uploading Media to Meta..."
+                      : submitting
+                      ? "Submitting Template..."
+                      : "Submit Template for Approval"}
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            {/* Live Preview Side */}
+            <div className="lg:col-span-5 sticky top-6">
+              <div className="bg-white p-5 rounded-xl border border-slate-200/80 shadow-sm">
+                <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 text-center">
+                  Live WhatsApp Preview
+                </h3>
+                <TemplatePreview
+                  headerType={headerType}
+                  headerText={headerText}
+                  headerMediaUrl={headerPreviewUrl}
+                  bodyText={bodyText}
+                  footerText={footerText}
+                  buttons={buttons}
+                  isCarousel={isCarousel}
+                  carouselCards={carouselCards}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
