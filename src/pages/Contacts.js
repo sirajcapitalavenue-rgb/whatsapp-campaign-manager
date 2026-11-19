@@ -3,7 +3,7 @@ import { authFetch } from "../services/api";
 import { useNavigate } from "react-router-dom";
 import { AuthContext } from "../context/AuthContext";
 import ContactViewModal from "../components/ContactViewModal";
-import AddContactsModal from "../components/AddContactsModal"; // Import the new modal
+import AddContactsModal from "../components/AddContactsModal";
 import {
   FaUser,
   FaUserCheck,
@@ -13,6 +13,10 @@ import {
   FaTrash,
   FaEye,
   FaFileImport,
+  FaEdit,
+  FaCheck,
+  FaTimes,
+  FaUserPlus,
 } from "react-icons/fa";
 
 export default function Contacts() {
@@ -24,12 +28,19 @@ export default function Contacts() {
   const [stats, setStats] = useState(null);
 
   // Modals State
-  const [viewingList, setViewingList] = useState(null); // For View Contacts
+  const [viewingList, setViewingList] = useState(null);
   const [viewingContacts, setViewingContacts] = useState([]);
-  const [addingContactList, setAddingContactList] = useState(null); // For Add Contacts Modal
+  const [addingContactList, setAddingContactList] = useState(null);
+
+  // Edit List Name State
+  const [editingListId, setEditingListId] = useState(null);
+  const [editingListName, setEditingListName] = useState("");
 
   // Search State
   const [searchTerm, setSearchTerm] = useState("");
+
+  // Both admin and manager can create, add contacts, edit, and delete their accessible lists
+  const canManage = !user || user.role === "admin" || user.role === "manager";
 
   const fetchContactLists = async (search = "") => {
     try {
@@ -64,7 +75,36 @@ export default function Contacts() {
       });
       if (data.success) {
         setNewListName("");
-        fetchContactLists();
+        fetchContactLists(searchTerm);
+      }
+    } catch (error) {
+      alert(error.message);
+    }
+  };
+
+  const handleStartEditList = (list) => {
+    setEditingListId(list._id);
+    setEditingListName(list.name);
+  };
+
+  const handleCancelEditList = () => {
+    setEditingListId(null);
+    setEditingListName("");
+  };
+
+  const handleSaveListName = async (listId) => {
+    if (!editingListName.trim()) {
+      return alert("Please enter a valid list name.");
+    }
+    try {
+      const data = await authFetch(`/contacts/lists/${listId}`, {
+        method: "PUT",
+        body: JSON.stringify({ name: editingListName.trim() }),
+      });
+      if (data.success) {
+        setEditingListId(null);
+        setEditingListName("");
+        fetchContactLists(searchTerm);
       }
     } catch (error) {
       alert(error.message);
@@ -74,13 +114,13 @@ export default function Contacts() {
   const handleDeleteList = async (listId) => {
     if (
       !window.confirm(
-        "Are you sure you want to delete this list and all its contacts?",
+        "Are you sure you want to delete this list and all its contacts?"
       )
     )
       return;
     try {
       await authFetch(`/contacts/lists/${listId}`, { method: "DELETE" });
-      fetchContactLists();
+      fetchContactLists(searchTerm);
     } catch (error) {
       alert(error.message);
     }
@@ -124,7 +164,15 @@ export default function Contacts() {
             setViewingList(null);
             setViewingContacts([]);
           }}
-          onRefresh={() => handleViewContacts(viewingList)}
+          onRefresh={() => {
+            handleViewContacts(viewingList);
+            fetchContactLists(searchTerm);
+          }}
+          onAddContacts={
+            !viewingList.isAnalyticsView
+              ? () => setAddingContactList(viewingList)
+              : null
+          }
         />
       )}
 
@@ -132,14 +180,19 @@ export default function Contacts() {
         <AddContactsModal
           list={addingContactList}
           onClose={() => setAddingContactList(null)}
-          onRefresh={fetchContactLists}
+          onRefresh={() => {
+            fetchContactLists(searchTerm);
+            if (viewingList && viewingList._id === addingContactList._id) {
+              handleViewContacts(viewingList);
+            }
+          }}
         />
       )}
 
       {/* --- ANALYTICS DASHBOARD --- */}
       {stats && (
         <div className="max-w-7xl mx-auto mb-10">
-          <h2 className="text-2xl font-bold text-gray-900 mb-6">Overview</h2>
+          <h2 className="text-2xl font-bold text-white mb-6">Overview</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
             <StatsCard
               title="Total Contacts"
@@ -209,7 +262,7 @@ export default function Contacts() {
       <div className="max-w-7xl mx-auto">
         <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
           <div className="flex items-baseline gap-3">
-            <h2 className="text-2xl font-bold text-gray-900">Contact Lists</h2>
+            <h2 className="text-2xl font-bold text-white">Contact Lists</h2>
             <span className="text-emerald-600 font-mono text-sm bg-emerald-50 px-2 py-1 rounded-md border border-emerald-200">
               {lists.length} Lists
             </span>
@@ -227,7 +280,7 @@ export default function Contacts() {
               />
             </div>
 
-            {/* Create List Form (Inline for compactness) */}
+            {/* Create List Form */}
             <form
               onSubmit={handleCreateList}
               className="flex gap-2 w-full md:w-auto"
@@ -292,14 +345,52 @@ export default function Contacts() {
                       >
                         <td className="px-6 py-5 font-medium text-gray-900">
                           <div className="flex items-center gap-4">
-                            <div className="w-10 h-10 rounded-xl bg-emerald-50 flex items-center justify-center text-emerald-600 border border-emerald-200 shadow-sm group-hover:scale-105 transition-transform">
+                            <div className="w-10 h-10 rounded-xl bg-emerald-50 flex items-center justify-center text-emerald-600 border border-emerald-200 shadow-sm shrink-0">
                               <span className="font-bold text-sm">
                                 {index + 1}
                               </span>
                             </div>
-                            <span className="text-lg group-hover:text-emerald-600 transition-colors">
-                              {list.name}
-                            </span>
+
+                            {editingListId === list._id ? (
+                              <div className="flex items-center gap-2 flex-1 max-w-md">
+                                <input
+                                  type="text"
+                                  value={editingListName}
+                                  onChange={(e) =>
+                                    setEditingListName(e.target.value)
+                                  }
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter")
+                                      handleSaveListName(list._id);
+                                    if (e.key === "Escape")
+                                      handleCancelEditList();
+                                  }}
+                                  autoFocus
+                                  className="bg-white border border-emerald-400 text-gray-900 text-sm rounded-lg px-3 py-1.5 w-full focus:ring-2 focus:ring-emerald-500 outline-none"
+                                />
+                                <button
+                                  onClick={() => handleSaveListName(list._id)}
+                                  className="p-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition-colors"
+                                  title="Save Name"
+                                >
+                                  <FaCheck size={12} />
+                                </button>
+                                <button
+                                  onClick={handleCancelEditList}
+                                  className="p-2 rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors"
+                                  title="Cancel"
+                                >
+                                  <FaTimes size={12} />
+                                </button>
+                              </div>
+                            ) : (
+                              <span
+                                onClick={() => handleViewContacts(list)}
+                                className="text-lg group-hover:text-emerald-600 transition-colors cursor-pointer"
+                              >
+                                {list.name}
+                              </span>
+                            )}
                           </div>
                         </td>
                         <td className="px-6 py-5">
@@ -308,28 +399,38 @@ export default function Contacts() {
                           </span>
                         </td>
                         <td className="px-6 py-5">
-                          <div className="flex items-center justify-center gap-3 opacity-70 group-hover:opacity-100 transition-opacity">
-                            {(user?.role === "admin" || (list.createdBy && list.createdBy.toString() === user?._id?.toString())) && (
-                              <ActionButton
+                          <div className="flex items-center justify-center gap-2">
+                            {canManage && (
+                              <button
                                 onClick={() => setAddingContactList(list)}
-                                icon={<FaFileImport />}
-                                label="Add Contacts"
-                                color="sky"
-                              />
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 transition-all"
+                                title="Add Contacts to List"
+                              >
+                                <FaUserPlus size={13} />
+                                <span>Add Contacts</span>
+                              </button>
                             )}
                             <ActionButton
                               onClick={() => handleViewContacts(list)}
                               icon={<FaEye />}
-                              label="View Contacts"
+                              label="View & Edit Contacts"
                               color="gray"
                             />
-                            {(user?.role === "admin" || (list.createdBy && list.createdBy.toString() === user?._id?.toString())) && (
-                              <ActionButton
-                                onClick={() => handleDeleteList(list._id)}
-                                icon={<FaTrash />}
-                                label="Delete"
-                                color="red"
-                              />
+                            {canManage && (
+                              <>
+                                <ActionButton
+                                  onClick={() => handleStartEditList(list)}
+                                  icon={<FaEdit />}
+                                  label="Rename Contact List"
+                                  color="sky"
+                                />
+                                <ActionButton
+                                  onClick={() => handleDeleteList(list._id)}
+                                  icon={<FaTrash />}
+                                  label="Delete List"
+                                  color="red"
+                                />
+                              </>
                             )}
                           </div>
                         </td>
@@ -358,7 +459,9 @@ const StatsCard = ({ title, value, icon, color, onClick }) => {
   return (
     <div
       onClick={onClick}
-      className={`bg-white p-6 rounded-xl border border-gray-200 flex items-center justify-between shadow-lg ${onClick ? "cursor-pointer hover:bg-gray-50 transition-colors" : ""}`}
+      className={`bg-white p-6 rounded-xl border border-gray-200 flex items-center justify-between shadow-lg ${
+        onClick ? "cursor-pointer hover:bg-gray-50 transition-colors" : ""
+      }`}
     >
       <div>
         <p className="text-gray-500 text-xs uppercase tracking-wider font-semibold">
@@ -382,7 +485,7 @@ const StatsCard = ({ title, value, icon, color, onClick }) => {
 const ActionButton = ({ onClick, icon, label, color }) => {
   const colors = {
     sky: "text-indigo-600 hover:bg-indigo-50",
-    gray: "text-gray-500 hover:bg-gray-100",
+    gray: "text-gray-600 hover:bg-gray-100",
     red: "text-red-600 hover:bg-red-50",
   };
 

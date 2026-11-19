@@ -3,7 +3,7 @@
 import React, { useState, useContext } from "react";
 import { authFetch } from "../services/api";
 import { AuthContext } from "../context/AuthContext";
-import { FaEdit, FaTrash, FaSave, FaEye } from "react-icons/fa";
+import { FaEdit, FaTrash, FaSave, FaEye, FaPlus } from "react-icons/fa";
 import { MdCancel } from "react-icons/md";
 
 export default function ContactViewModal({
@@ -11,6 +11,7 @@ export default function ContactViewModal({
   contacts,
   onClose,
   onRefresh,
+  onAddContacts,
 }) {
   const { user } = useContext(AuthContext);
   const [editingContactId, setEditingContactId] = useState(null);
@@ -22,7 +23,9 @@ export default function ContactViewModal({
 
   if (!list) return null; // The modal is controlled by the 'list' prop
 
-  const isAuthorizedToMutate = user?.role === "admin" || (list.createdBy && list.createdBy.toString() === user?._id?.toString());
+  const isAuthorizedToMutate =
+    !list.isAnalyticsView &&
+    (user?.role === "admin" || user?.role === "manager");
 
   const handleEditClick = (contact) => {
     setEditingContactId(contact._id);
@@ -232,14 +235,22 @@ export default function ContactViewModal({
         )}
 
         <div className="flex justify-between items-center p-4 border-b border-gray-200">
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center gap-3">
             <h2 className="text-xl font-bold text-gray-900">
               Contacts in "{list.name}" ({contacts.length})
             </h2>
+            {isAuthorizedToMutate && onAddContacts && (
+              <button
+                onClick={onAddContacts}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors shadow-sm"
+              >
+                <FaPlus size={10} /> Add Contacts
+              </button>
+            )}
             {isAuthorizedToMutate && selectedContactIds.size > 0 && (
               <button
                 onClick={handleBulkDelete}
-                className="bg-red-600 hover:bg-red-700 text-gray-900 px-3 py-1 rounded text-sm transition-colors"
+                className="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors"
                 title="Delete Selected"
               >
                 Delete Selected ({selectedContactIds.size})
@@ -318,7 +329,7 @@ export default function ContactViewModal({
                               phoneNumber: e.target.value,
                             })
                           }
-                          className="bg-[#2c3943] text-gray-900 text-sm rounded-md p-1 w-full"
+                          className="bg-white border border-gray-300 text-gray-900 text-sm rounded-md px-2.5 py-1.5 w-full focus:border-emerald-500 outline-none"
                         />
                       </td>
                       <td className="px-6 py-4">
@@ -331,7 +342,7 @@ export default function ContactViewModal({
                               name: e.target.value,
                             })
                           }
-                          className="bg-[#2c3943] text-gray-900 text-sm rounded-md p-1 w-full"
+                          className="bg-white border border-gray-300 text-gray-900 text-sm rounded-md px-2.5 py-1.5 w-full focus:border-emerald-500 outline-none"
                         />
                       </td>
                       <td className="px-6 py-4 flex gap-4">
